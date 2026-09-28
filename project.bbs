@@ -1,0 +1,26 @@
+id(pixelsim)
+name("PixelSim")
+ver(0.1.0)
+
+targets(
+  consoleless(
+    id(pixelsim_app)
+    output(PixelSim)
+    lang(c)
+    stdver(c11)
+    warning_level(medium)
+    units(src/main.c src/sim_core.c)
+    include_dirs(src)
+    link_libs(d3d11 dxgi dxguid d3dcompiler user32 gdi32)
+  )
+
+  test(
+    id(sim_core_test)
+    output(sim_core_test)
+    lang(c)
+    stdver(c11)
+    warning_level(high)
+    units(tests/SimCoreTest.c src/sim_core.c)
+    include_dirs(src)
+  )
+)
