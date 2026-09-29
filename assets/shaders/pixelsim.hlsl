@@ -54,6 +54,22 @@ struct VertexOutput
   float2 uv : TEXCOORD0;
 };
 
+struct TextVertexInput
+{
+  float2 position : POSITION;
+  float2 uv : TEXCOORD0;
+  float4 color : COLOR0;
+};
+
+struct TextVertexOutput
+{
+  float4 position : SV_Position;
+  float2 uv : TEXCOORD0;
+  float4 color : COLOR0;
+};
+
+Texture2D<float> FontAtlas : register(t0);
+
 uint Hash(uint2 p, uint salt)
 {
   uint h = p.x * 0x8da6b343u + p.y * 0xd8163841u + salt * 0xcb1ab31fu;
@@ -581,6 +597,21 @@ VertexOutput FullscreenVertex(uint id : SV_VertexID)
   return output;
 }
 
+TextVertexOutput TextVertex(TextVertexInput input)
+{
+  TextVertexOutput output;
+  output.position = float4(input.position, 0.0, 1.0);
+  output.uv = input.uv;
+  output.color = input.color;
+  return output;
+}
+
+float4 DrawText(TextVertexOutput input) : SV_Target
+{
+  float coverage = FontAtlas.Sample(PointSampler, input.uv);
+  return float4(input.color.rgb, input.color.a * coverage);
+}
+
 float4 PixelColor(uint pixel)
 {
   bool containsDissolvedSalt =
@@ -626,21 +657,28 @@ float4 DrawPixels(VertexOutput input) : SV_Target
   // D3D11 owns this surface, so draw the clickable material palette in the same
   // pass.
   int2 palettePosition = int2(cell) - int2(8, 6);
-  int paletteRow = palettePosition.y / 18;
-  int paletteColumn = palettePosition.x / 52;
-  int button = paletteRow * 8 + paletteColumn + 1;
-  int localX = palettePosition.x - paletteColumn * 52;
-  int localY = palettePosition.y - paletteRow * 18;
+  int paletteRow = palettePosition.y / 28;
+  int paletteColumn = palettePosition.x / 28;
+  int button = paletteRow * 14 + paletteColumn;
+  int localX = palettePosition.x - paletteColumn * 28;
+  int localY = palettePosition.y - paletteRow * 28;
   bool insidePalette = palettePosition.x >= 0 && palettePosition.y >= 0 &&
-                       paletteColumn < 8 && localY < 14 &&
-                       button >= int(WOOD) && button <= int(BEDROCK) &&
-                       localX < 48;
+                       paletteColumn < 14 && localY < 24 &&
+                       button >= int(EMPTY) && button <= int(BEDROCK) &&
+                       localX < 24;
   if (insidePalette)
   {
     uint material = uint(button);
     float4 swatch = PixelColor(material);
+    if (material == EMPTY)
+    {
+      bool eraseMark = abs(localX - localY) <= 1 ||
+                       abs((23 - localX) - localY) <= 1;
+      swatch = eraseMark ? float4(0.78, 0.80, 0.84, 1.0)
+                         : float4(0.10, 0.11, 0.13, 1.0);
+    }
     bool selected = material == SelectedPixel;
-    bool border = localX < 2 || localX >= 46 || localY < 2 || localY >= 12;
+    bool border = localX < 2 || localX >= 22 || localY < 2 || localY >= 22;
     color = selected && border ? float4(1.0, 1.0, 1.0, 1.0) : swatch;
   }
   return color;

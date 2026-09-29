@@ -55,11 +55,11 @@ static void TestBrushCommandClampsToSimulationBounds(void) {
   assert(command.seed == 123u);
 }
 
-static void TestBrushCommandRejectsNonSpawnablePixels(void) {
+static void TestBrushCommandSupportsErase(void) {
   const sim_brush_command command =
       sim_make_brush_command(SIM_PIXEL_EMPTY, 20, 20, 4, 0u);
 
-  assert(command.type == SIM_PIXEL_SAND);
+  assert(command.type == SIM_PIXEL_EMPTY);
   assert(command.radius == 4);
 }
 
@@ -96,14 +96,27 @@ static void TestClientPointMapsThroughViewport(void) {
   assert(!sim_viewport_to_cell(viewport, 1000, 500, &cell_x, &cell_y));
 }
 
-static void TestPaletteHitTestingUsesSimulationCells(void) {
+static void TestSquarePaletteIncludesEraseAtTopLeft(void) {
   const sim_viewport viewport = sim_make_viewport(1280, 720);
 
-  assert(sim_palette_material_at(viewport, 20, 20) == SIM_PIXEL_WOOD);
-  assert(sim_palette_material_at(viewport, 228, 20) == SIM_PIXEL_SAND);
-  assert(sim_palette_material_at(viewport, 20, 56) == SIM_PIXEL_ACID);
-  assert(sim_palette_material_at(viewport, 436, 56) == SIM_PIXEL_BEDROCK);
-  assert(sim_palette_material_at(viewport, 20, 100) == SIM_PIXEL_EMPTY);
+  assert(SIM_PALETTE_X == 8);
+  assert(SIM_PALETTE_COLUMNS == SIM_PIXEL_TYPE_COUNT);
+  assert(SIM_PALETTE_SWATCH_WIDTH == SIM_PALETTE_SWATCH_HEIGHT);
+  for (int material = SIM_PIXEL_EMPTY; material < SIM_PIXEL_TYPE_COUNT;
+       ++material) {
+    const int cell_x = SIM_PALETTE_X +
+                       material * SIM_PALETTE_SWATCH_STRIDE +
+                       SIM_PALETTE_SWATCH_WIDTH / 2;
+    const int client_x = cell_x * viewport.width / SIM_WIDTH;
+    const int client_y =
+        (SIM_PALETTE_Y + SIM_PALETTE_SWATCH_HEIGHT / 2) * viewport.height /
+        SIM_HEIGHT;
+    assert(sim_palette_material_at(viewport, client_x, client_y) == material);
+  }
+  assert(sim_palette_material_at(
+             viewport, SIM_PALETTE_X * viewport.width / SIM_WIDTH,
+             (SIM_PALETTE_Y + SIM_PALETTE_SWATCH_HEIGHT + 1) *
+                 viewport.height / SIM_HEIGHT) == SIM_PIXEL_TYPE_COUNT);
 }
 
 static void TestBrushQueueConsumesOneClickOnce(void) {
@@ -183,11 +196,11 @@ int main(void) {
   TestMaterialProperties();
   TestMaterialNamesMatchUserInterface();
   TestBrushCommandClampsToSimulationBounds();
-  TestBrushCommandRejectsNonSpawnablePixels();
+  TestBrushCommandSupportsErase();
   TestBrushCommandBoundsLargeRadius();
   TestViewportPreservesSimulationAspectRatio();
   TestClientPointMapsThroughViewport();
-  TestPaletteHitTestingUsesSimulationCells();
+  TestSquarePaletteIncludesEraseAtTopLeft();
   TestBrushQueueConsumesOneClickOnce();
   TestRadiusFiveBrushContainsEightyOneCells();
   TestBrushBoundsClipToSimulation();

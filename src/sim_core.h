@@ -9,11 +9,11 @@
 #define SIM_HEIGHT 360
 #define SIM_PALETTE_X 8
 #define SIM_PALETTE_Y 6
-#define SIM_PALETTE_SWATCH_WIDTH 48
-#define SIM_PALETTE_SWATCH_HEIGHT 14
-#define SIM_PALETTE_SWATCH_STRIDE 52
-#define SIM_PALETTE_ROW_STRIDE 18
-#define SIM_PALETTE_COLUMNS 8
+#define SIM_PALETTE_SWATCH_WIDTH 24
+#define SIM_PALETTE_SWATCH_HEIGHT 24
+#define SIM_PALETTE_SWATCH_STRIDE 28
+#define SIM_PALETTE_ROW_STRIDE 28
+#define SIM_PALETTE_COLUMNS 14
 #define SIM_BRUSH_QUEUE_CAPACITY 256
 #define SIM_MAX_BRUSH_RADIUS SIM_WIDTH
 #define SIM_UPDATES_PER_SECOND 120u
@@ -92,7 +92,7 @@ sim_material sim_get_material(sim_pixel_type type);
 /* Returns the human-readable label used by the selector UI. */
 const char* sim_material_name(sim_pixel_type type);
 
-/* Creates a bounded GPU brush payload. Empty is replaced with sand. */
+/* Creates a bounded GPU brush payload. Empty produces an erase command. */
 sim_brush_command sim_make_brush_command(
     sim_pixel_type type,
     int x,
@@ -111,7 +111,7 @@ bool sim_viewport_to_cell(
     int* cell_x,
     int* cell_y);
 
-/* Returns the palette material under a client point, or empty when there is none. */
+/* Returns the palette material under a client point, or TYPE_COUNT on a miss. */
 sim_pixel_type sim_palette_material_at(sim_viewport viewport, int client_x, int client_y);
 
 /* Enqueues and consumes brush events exactly once in FIFO order. */

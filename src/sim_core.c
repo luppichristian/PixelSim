@@ -53,7 +53,7 @@ sim_brush_command sim_make_brush_command(
     int radius,
     uint32_t seed) {
   sim_brush_command command;
-  command.type = type <= SIM_PIXEL_EMPTY || type >= SIM_PIXEL_TYPE_COUNT
+  command.type = type < SIM_PIXEL_EMPTY || type >= SIM_PIXEL_TYPE_COUNT
                      ? SIM_PIXEL_SAND
                      : (uint32_t)type;
   command.x = x < 0 ? 0 : (x >= SIM_WIDTH ? SIM_WIDTH - 1 : x);
@@ -105,17 +105,17 @@ sim_pixel_type sim_palette_material_at(sim_viewport viewport, int client_x, int 
   int cell_y;
   if (!sim_viewport_to_cell(viewport, client_x, client_y, &cell_x, &cell_y) ||
       cell_y < SIM_PALETTE_Y || cell_x < SIM_PALETTE_X)
-    return SIM_PIXEL_EMPTY;
+    return SIM_PIXEL_TYPE_COUNT;
 
   const int row = (cell_y - SIM_PALETTE_Y) / SIM_PALETTE_ROW_STRIDE;
   const int local_y = (cell_y - SIM_PALETTE_Y) % SIM_PALETTE_ROW_STRIDE;
   const int offset = cell_x - SIM_PALETTE_X;
   const int column = offset / SIM_PALETTE_SWATCH_STRIDE;
-  const int material = row * SIM_PALETTE_COLUMNS + column + SIM_PIXEL_WOOD;
+  const int material = row * SIM_PALETTE_COLUMNS + column;
   if (material >= SIM_PIXEL_TYPE_COUNT ||
       column >= SIM_PALETTE_COLUMNS || local_y >= SIM_PALETTE_SWATCH_HEIGHT ||
       offset % SIM_PALETTE_SWATCH_STRIDE >= SIM_PALETTE_SWATCH_WIDTH)
-    return SIM_PIXEL_EMPTY;
+    return SIM_PIXEL_TYPE_COUNT;
   return (sim_pixel_type)material;
 }
 

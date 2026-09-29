@@ -10,7 +10,7 @@ targets(
     stdver(c11)
     warning_level(medium)
     units(src/main.c src/sim_core.c)
-    include_dirs(src)
+    include_dirs(src third_party)
     link_libs(d3d11 dxgi dxguid d3dcompiler user32 gdi32)
   )
 

@@ -7,7 +7,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef _MSC_VER
+#pragma warning(push, 0)
+#pragma warning(disable : 4505 5045)
+#endif
+#define STBTT_STATIC
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #include "sim_core.h"
 
@@ -32,6 +44,29 @@ _Static_assert(SIM_WIDTH <= 640, "the shared row solver supports at most 640 cel
 _Static_assert(SIM_PASSES_PER_UPDATE == 5u,
                "the simulation dispatch schedule contains five passes");
 
+#define FONT_ATLAS_SIZE 512
+#define FONT_FIRST_CHARACTER 32
+#define FONT_CHARACTER_COUNT 95
+#define TEXT_MAX_VERTICES 4096
+
+typedef struct text_vertex {
+  float position[2];
+  float uv[2];
+  float color[4];
+} text_vertex;
+
+typedef struct text_renderer {
+  ID3D11Texture2D* atlas;
+  ID3D11ShaderResourceView* atlas_srv;
+  ID3D11Buffer* vertices;
+  ID3D11VertexShader* vertex_shader;
+  ID3D11PixelShader* pixel_shader;
+  ID3D11InputLayout* input_layout;
+  ID3D11SamplerState* sampler;
+  ID3D11BlendState* blend;
+  stbtt_bakedchar characters[FONT_CHARACTER_COUNT];
+} text_renderer;
+
 typedef struct app {
   HWND window;
   ID3D11Device* device;
@@ -51,6 +86,7 @@ typedef struct app {
   ID3D11VertexShader* vertex_shader;
   ID3D11PixelShader* pixel_shader;
   ID3D11SamplerState* point_sampler;
+  text_renderer text;
   uint32_t read_state;
   uint32_t frame_index;
   uint32_t horizontal_phase;
@@ -64,7 +100,13 @@ typedef struct app {
   sim_brush_queue brush_queue;
   sim_brush_bounds brush_bounds;
   sim_pixel_type selected;
+  sim_pixel_type hovered;
+  int mouse_x;
+  int mouse_y;
+  int client_width;
+  int client_height;
   bool painting;
+  bool tracking_mouse;
 } app;
 
 static void Release(void* object) {
@@ -96,6 +138,157 @@ static bool CompileShader(const char* entry, const char* target, ID3DBlob** blob
   }
   Release(errors);
   return true;
+}
+
+static bool LoadUiFont(uint8_t** font_data) {
+  char windows_directory[MAX_PATH];
+  char font_path[MAX_PATH];
+  if (!GetWindowsDirectoryA(windows_directory, MAX_PATH))
+    return false;
+  const int path_length = snprintf(font_path, sizeof(font_path),
+                                   "%s\\Fonts\\segoeui.ttf",
+                                   windows_directory);
+  if (path_length < 0 || path_length >= (int)sizeof(font_path))
+    return false;
+
+  FILE* file = NULL;
+  if (fopen_s(&file, font_path, "rb") != 0 || !file)
+    return false;
+  if (fseek(file, 0, SEEK_END) != 0) {
+    fclose(file);
+    return false;
+  }
+  const long size = ftell(file);
+  if (size <= 0 || fseek(file, 0, SEEK_SET) != 0) {
+    fclose(file);
+    return false;
+  }
+
+  *font_data = malloc((size_t)size);
+  if (!*font_data || fread(*font_data, 1, (size_t)size, file) != (size_t)size) {
+    free(*font_data);
+    *font_data = NULL;
+    fclose(file);
+    return false;
+  }
+  fclose(file);
+  return true;
+}
+
+static bool CreateTextResources(app* application) {
+  uint8_t* font_data = NULL;
+  uint8_t* atlas_data = calloc(FONT_ATLAS_SIZE, FONT_ATLAS_SIZE);
+  if (!atlas_data || !LoadUiFont(&font_data)) {
+    free(atlas_data);
+    free(font_data);
+    MessageBoxA(NULL, "Could not load the Windows UI font.", "PixelSim",
+                MB_ICONERROR);
+    return false;
+  }
+  if (stbtt_BakeFontBitmap(font_data, 0, 18.0f, atlas_data,
+                           FONT_ATLAS_SIZE, FONT_ATLAS_SIZE,
+                           FONT_FIRST_CHARACTER, FONT_CHARACTER_COUNT,
+                           application->text.characters) <= 0) {
+    free(atlas_data);
+    free(font_data);
+    MessageBoxA(NULL, "Could not build the text atlas.", "PixelSim",
+                MB_ICONERROR);
+    return false;
+  }
+  free(font_data);
+  atlas_data[0] = 255;
+
+  D3D11_TEXTURE2D_DESC atlas = {0};
+  atlas.Width = FONT_ATLAS_SIZE;
+  atlas.Height = FONT_ATLAS_SIZE;
+  atlas.MipLevels = 1;
+  atlas.ArraySize = 1;
+  atlas.Format = DXGI_FORMAT_R8_UNORM;
+  atlas.SampleDesc.Count = 1;
+  atlas.Usage = D3D11_USAGE_IMMUTABLE;
+  atlas.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA atlas_initial = {atlas_data, FONT_ATLAS_SIZE, 0};
+  const HRESULT atlas_result = ID3D11Device_CreateTexture2D(
+      application->device, &atlas, &atlas_initial, &application->text.atlas);
+  free(atlas_data);
+  if (!Check(atlas_result, "CreateTexture2D font atlas") ||
+      !Check(ID3D11Device_CreateShaderResourceView(
+                 application->device,
+                 (ID3D11Resource*)application->text.atlas, NULL,
+                 &application->text.atlas_srv),
+             "CreateShaderResourceView font atlas"))
+    return false;
+
+  D3D11_BUFFER_DESC vertices = {0};
+  vertices.ByteWidth = sizeof(text_vertex) * TEXT_MAX_VERTICES;
+  vertices.Usage = D3D11_USAGE_DYNAMIC;
+  vertices.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+  vertices.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  if (!Check(ID3D11Device_CreateBuffer(application->device, &vertices, NULL,
+                                       &application->text.vertices),
+             "CreateBuffer text vertices"))
+    return false;
+
+  ID3DBlob* blob = NULL;
+  if (!CompileShader("TextVertex", "vs_5_0", &blob))
+    return false;
+  bool created = Check(ID3D11Device_CreateVertexShader(
+                           application->device,
+                           ID3D10Blob_GetBufferPointer(blob),
+                           ID3D10Blob_GetBufferSize(blob), NULL,
+                           &application->text.vertex_shader),
+                       "CreateVertexShader text");
+  D3D11_INPUT_ELEMENT_DESC layout[] = {
+      {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+       offsetof(text_vertex, position), D3D11_INPUT_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+       offsetof(text_vertex, uv), D3D11_INPUT_PER_VERTEX_DATA, 0},
+      {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+       offsetof(text_vertex, color), D3D11_INPUT_PER_VERTEX_DATA, 0},
+  };
+  if (created)
+    created = Check(ID3D11Device_CreateInputLayout(
+                        application->device, layout,
+                        sizeof(layout) / sizeof(layout[0]),
+                        ID3D10Blob_GetBufferPointer(blob),
+                        ID3D10Blob_GetBufferSize(blob),
+                        &application->text.input_layout),
+                    "CreateInputLayout text");
+  Release(blob);
+  blob = NULL;
+  if (!created || !CompileShader("DrawText", "ps_5_0", &blob))
+    return false;
+  created = Check(ID3D11Device_CreatePixelShader(
+                      application->device,
+                      ID3D10Blob_GetBufferPointer(blob),
+                      ID3D10Blob_GetBufferSize(blob), NULL,
+                      &application->text.pixel_shader),
+                  "CreatePixelShader text");
+  Release(blob);
+  if (!created)
+    return false;
+
+  D3D11_SAMPLER_DESC sampler = {0};
+  sampler.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  sampler.AddressU = sampler.AddressV = sampler.AddressW =
+      D3D11_TEXTURE_ADDRESS_CLAMP;
+  if (!Check(ID3D11Device_CreateSamplerState(
+                 application->device, &sampler, &application->text.sampler),
+             "CreateSamplerState text"))
+    return false;
+
+  D3D11_BLEND_DESC blend = {0};
+  blend.RenderTarget[0].BlendEnable = TRUE;
+  blend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+  blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+  blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+  blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+  blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+  blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+  blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+  return Check(ID3D11Device_CreateBlendState(
+                   application->device, &blend, &application->text.blend),
+               "CreateBlendState text");
 }
 
 static bool CreateStateTexture(app* application, uint32_t index) {
@@ -425,6 +618,216 @@ static bool ApplyBrush(app* application, sim_brush_command command) {
   return true;
 }
 
+static float TextWidth(const app* application, const char* text) {
+  float width = 0.0f;
+  for (const unsigned char* character = (const unsigned char*)text; *character;
+       ++character) {
+    if (*character >= FONT_FIRST_CHARACTER &&
+        *character < FONT_FIRST_CHARACTER + FONT_CHARACTER_COUNT)
+      width += application->text
+                   .characters[*character - FONT_FIRST_CHARACTER]
+                   .xadvance;
+  }
+  return width;
+}
+
+static void SetTextVertex(text_vertex* vertex,
+                          float x,
+                          float y,
+                          float u,
+                          float v,
+                          const float color[4],
+                          int client_width,
+                          int client_height) {
+  vertex->position[0] = x * 2.0f / (float)client_width - 1.0f;
+  vertex->position[1] = 1.0f - y * 2.0f / (float)client_height;
+  vertex->uv[0] = u;
+  vertex->uv[1] = v;
+  memcpy(vertex->color, color, sizeof(vertex->color));
+}
+
+static void AddTextQuad(app* application,
+                        text_vertex* vertices,
+                        uint32_t* vertex_count,
+                        float x0,
+                        float y0,
+                        float x1,
+                        float y1,
+                        float u0,
+                        float v0,
+                        float u1,
+                        float v1,
+                        const float color[4]) {
+  if (*vertex_count + 6u > TEXT_MAX_VERTICES)
+    return;
+  text_vertex* quad = vertices + *vertex_count;
+  SetTextVertex(&quad[0], x0, y0, u0, v0, color, application->client_width,
+                application->client_height);
+  SetTextVertex(&quad[1], x1, y0, u1, v0, color, application->client_width,
+                application->client_height);
+  SetTextVertex(&quad[2], x1, y1, u1, v1, color, application->client_width,
+                application->client_height);
+  SetTextVertex(&quad[3], x0, y0, u0, v0, color, application->client_width,
+                application->client_height);
+  SetTextVertex(&quad[4], x1, y1, u1, v1, color, application->client_width,
+                application->client_height);
+  SetTextVertex(&quad[5], x0, y1, u0, v1, color, application->client_width,
+                application->client_height);
+  *vertex_count += 6u;
+}
+
+static void AddText(app* application,
+                    text_vertex* vertices,
+                    uint32_t* vertex_count,
+                    const char* text,
+                    float x,
+                    float baseline,
+                    const float color[4]) {
+  float pen_x = x;
+  float pen_y = baseline;
+  for (const unsigned char* character = (const unsigned char*)text; *character;
+       ++character) {
+    if (*character < FONT_FIRST_CHARACTER ||
+        *character >= FONT_FIRST_CHARACTER + FONT_CHARACTER_COUNT)
+      continue;
+    stbtt_aligned_quad quad;
+    stbtt_GetBakedQuad(application->text.characters, FONT_ATLAS_SIZE,
+                       FONT_ATLAS_SIZE, *character - FONT_FIRST_CHARACTER,
+                       &pen_x, &pen_y, &quad, 1);
+    AddTextQuad(application, vertices, vertex_count, quad.x0, quad.y0, quad.x1,
+                quad.y1, quad.s0, quad.t0, quad.s1, quad.t1, color);
+  }
+}
+
+static char MaterialShortcut(sim_pixel_type material) {
+  if (material == SIM_PIXEL_EMPTY)
+    return '0';
+  if (material >= SIM_PIXEL_WOOD && material <= SIM_PIXEL_ACID)
+    return (char)('0' + material);
+  if (material >= SIM_PIXEL_FIRE && material <= SIM_PIXEL_BEDROCK)
+    return (char)('A' + material - SIM_PIXEL_FIRE);
+  return '?';
+}
+
+static const char* MaterialUiName(sim_pixel_type material) {
+  return material == SIM_PIXEL_EMPTY ? "Erase" : sim_material_name(material);
+}
+
+static bool RenderTooltip(app* application) {
+  static const char* descriptions[SIM_PIXEL_TYPE_COUNT] = {
+      "Remove material from the brush area.",
+      "Rigid fuel that catches fire near heat.",
+      "Heavy solid that rust and acid can erode.",
+      "Granular powder that falls and piles up.",
+      "Granular corrosion that spreads through iron.",
+      "Dense liquid that cools lava and extinguishes fire.",
+      "Hot liquid that ignites fuel and turns water to steam.",
+      "Light gas that rises and drifts.",
+      "Hot vapor that rises and can condense into water.",
+      "Corrosive liquid that dissolves most materials.",
+      "Hot gas that spreads through wood and oil.",
+      "Buoyant liquid fuel that floats on water.",
+      "Granular mineral that slowly dissolves in water.",
+      "Permanent solid that resists reactions.",
+  };
+  if (application->hovered >= SIM_PIXEL_TYPE_COUNT ||
+      application->client_width <= 0 || application->client_height <= 0)
+    return true;
+
+  char title[64];
+  snprintf(title, sizeof(title), "%s  [%c]",
+           MaterialUiName(application->hovered),
+           MaterialShortcut(application->hovered));
+  const char* description = descriptions[application->hovered];
+  float tooltip_width = TextWidth(application, title);
+  const float description_width = TextWidth(application, description);
+  if (description_width > tooltip_width)
+    tooltip_width = description_width;
+  tooltip_width += 20.0f;
+  const float tooltip_height = 54.0f;
+  float tooltip_x = (float)application->mouse_x + 14.0f;
+  float tooltip_y = (float)application->mouse_y + 18.0f;
+  if (tooltip_x + tooltip_width > application->client_width - 6.0f)
+    tooltip_x = (float)application->client_width - tooltip_width - 6.0f;
+  if (tooltip_y + tooltip_height > application->client_height - 6.0f)
+    tooltip_y = (float)application->mouse_y - tooltip_height - 10.0f;
+  if (tooltip_x < 6.0f)
+    tooltip_x = 6.0f;
+  if (tooltip_y < 6.0f)
+    tooltip_y = 6.0f;
+
+  text_vertex cpu_vertices[TEXT_MAX_VERTICES];
+  uint32_t vertex_count = 0;
+  const float white_pixel = 0.5f / FONT_ATLAS_SIZE;
+  const float shadow[4] = {0.0f, 0.0f, 0.0f, 0.35f};
+  const float background[4] = {0.055f, 0.065f, 0.08f, 0.96f};
+  const float border[4] = {0.42f, 0.46f, 0.52f, 1.0f};
+  const float title_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  const float description_color[4] = {0.82f, 0.85f, 0.90f, 1.0f};
+  AddTextQuad(application, cpu_vertices, &vertex_count, tooltip_x + 3.0f,
+              tooltip_y + 3.0f, tooltip_x + tooltip_width + 3.0f,
+              tooltip_y + tooltip_height + 3.0f, white_pixel, white_pixel,
+              white_pixel, white_pixel, shadow);
+  AddTextQuad(application, cpu_vertices, &vertex_count, tooltip_x, tooltip_y,
+              tooltip_x + tooltip_width, tooltip_y + tooltip_height,
+              white_pixel, white_pixel, white_pixel, white_pixel, border);
+  AddTextQuad(application, cpu_vertices, &vertex_count, tooltip_x + 1.0f,
+              tooltip_y + 1.0f, tooltip_x + tooltip_width - 1.0f,
+              tooltip_y + tooltip_height - 1.0f, white_pixel, white_pixel,
+              white_pixel, white_pixel, background);
+  AddText(application, cpu_vertices, &vertex_count, title, tooltip_x + 10.0f,
+          tooltip_y + 21.0f, title_color);
+  AddText(application, cpu_vertices, &vertex_count, description,
+          tooltip_x + 10.0f, tooltip_y + 43.0f, description_color);
+
+  D3D11_MAPPED_SUBRESOURCE mapped;
+  if (!Check(ID3D11DeviceContext_Map(
+                 application->context,
+                 (ID3D11Resource*)application->text.vertices, 0,
+                 D3D11_MAP_WRITE_DISCARD, 0, &mapped),
+             "Map text vertices"))
+    return false;
+  memcpy(mapped.pData, cpu_vertices, vertex_count * sizeof(text_vertex));
+  ID3D11DeviceContext_Unmap(application->context,
+                            (ID3D11Resource*)application->text.vertices, 0);
+
+  D3D11_VIEWPORT viewport = {0};
+  viewport.Width = (FLOAT)application->client_width;
+  viewport.Height = (FLOAT)application->client_height;
+  viewport.MaxDepth = 1.0f;
+  ID3D11DeviceContext_RSSetViewports(application->context, 1, &viewport);
+  const UINT stride = sizeof(text_vertex);
+  const UINT offset = 0;
+  ID3D11DeviceContext_IASetInputLayout(application->context,
+                                       application->text.input_layout);
+  ID3D11DeviceContext_IASetVertexBuffers(application->context, 0, 1,
+                                         &application->text.vertices, &stride,
+                                         &offset);
+  ID3D11DeviceContext_IASetPrimitiveTopology(
+      application->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  ID3D11DeviceContext_VSSetShader(application->context,
+                                  application->text.vertex_shader, NULL, 0);
+  ID3D11DeviceContext_PSSetShader(application->context,
+                                  application->text.pixel_shader, NULL, 0);
+  ID3D11DeviceContext_PSSetShaderResources(
+      application->context, 0, 1, &application->text.atlas_srv);
+  ID3D11DeviceContext_PSSetSamplers(application->context, 0, 1,
+                                    &application->text.sampler);
+  const FLOAT blend_factor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  ID3D11DeviceContext_OMSetBlendState(application->context,
+                                      application->text.blend, blend_factor,
+                                      0xffffffffu);
+  ID3D11DeviceContext_Draw(application->context, vertex_count, 0);
+  {
+    ID3D11ShaderResourceView* null_atlas = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1,
+                                             &null_atlas);
+  }
+  ID3D11DeviceContext_OMSetBlendState(application->context, NULL, NULL,
+                                      0xffffffffu);
+  return true;
+}
+
 static void UpdateFps(app* application);
 
 static bool Render(app* application) {
@@ -457,6 +860,14 @@ static bool Render(app* application) {
   FLOAT clear[] = {0.02f, 0.03f, 0.04f, 1.0f};
   ID3D11DeviceContext_OMSetRenderTargets(application->context, 1, &application->backbuffer, NULL);
   ID3D11DeviceContext_ClearRenderTargetView(application->context, application->backbuffer, clear);
+  D3D11_VIEWPORT simulation_viewport = {0};
+  simulation_viewport.TopLeftX = (FLOAT)application->viewport.x;
+  simulation_viewport.TopLeftY = (FLOAT)application->viewport.y;
+  simulation_viewport.Width = (FLOAT)application->viewport.width;
+  simulation_viewport.Height = (FLOAT)application->viewport.height;
+  simulation_viewport.MaxDepth = 1.0f;
+  ID3D11DeviceContext_RSSetViewports(application->context, 1,
+                                     &simulation_viewport);
   ID3D11ShaderResourceView* state = application->state_srv[application->read_state];
   ID3D11Buffer* constants = application->constants;
   ID3D11DeviceContext_VSSetShader(application->context, application->vertex_shader, NULL, 0);
@@ -470,6 +881,8 @@ static bool Render(app* application) {
     ID3D11ShaderResourceView* null_state = NULL;
     ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1, &null_state);
   }
+  if (!RenderTooltip(application))
+    return false;
   if (!Check(IDXGISwapChain_Present(application->swap_chain, 1, 0), "Present"))
     return false;
   UpdateFps(application);
@@ -478,7 +891,9 @@ static bool Render(app* application) {
 
 static void UpdateWindowTitle(app* application) {
   char title[128];
-  snprintf(title, sizeof(title), "PixelSim | %s | FPS: %u | Palette keys: 1-9, A-D", sim_material_name(application->selected), application->fps);
+  snprintf(title, sizeof(title),
+           "PixelSim | %s | FPS: %u | Palette keys: 0-9, A-D",
+           MaterialUiName(application->selected), application->fps);
   SetWindowTextA(application->window, title);
 }
 
@@ -498,7 +913,7 @@ static void UpdateFps(app* application) {
 static bool SelectMaterialAtPoint(app* application, int x, int y) {
   sim_pixel_type material =
       sim_palette_material_at(application->viewport, x, y);
-  if (material == SIM_PIXEL_EMPTY)
+  if (material >= SIM_PIXEL_TYPE_COUNT)
     return false;
   application->selected = material;
   UpdateWindowTitle(application);
@@ -506,7 +921,8 @@ static bool SelectMaterialAtPoint(app* application, int x, int y) {
 }
 
 static bool QueueBrushAtPoint(app* application, int x, int y) {
-  if (sim_palette_material_at(application->viewport, x, y) != SIM_PIXEL_EMPTY)
+  if (sim_palette_material_at(application->viewport, x, y) !=
+      SIM_PIXEL_TYPE_COUNT)
     return false;
   int cell_x;
   int cell_y;
@@ -519,6 +935,8 @@ static bool QueueBrushAtPoint(app* application, int x, int y) {
 }
 
 static bool ResizeSwapChain(app* application, int width, int height) {
+  application->client_width = width;
+  application->client_height = height;
   application->viewport = sim_make_viewport(width, height);
   if (width <= 0 || height <= 0)
     return true;
@@ -845,9 +1263,28 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam
       }
       return 0;
     case WM_MOUSEMOVE:
-      if (application && application->painting && (wparam & MK_LBUTTON))
-        QueueBrushAtPoint(application, (int)(short)LOWORD(lparam),
-                          (int)(short)HIWORD(lparam));
+      if (application) {
+        application->mouse_x = (int)(short)LOWORD(lparam);
+        application->mouse_y = (int)(short)HIWORD(lparam);
+        application->hovered = sim_palette_material_at(
+            application->viewport, application->mouse_x,
+            application->mouse_y);
+        if (!application->tracking_mouse) {
+          TRACKMOUSEEVENT tracking = {
+              sizeof(tracking), TME_LEAVE, window, HOVER_DEFAULT};
+          TrackMouseEvent(&tracking);
+          application->tracking_mouse = true;
+        }
+        if (application->painting && (wparam & MK_LBUTTON))
+          QueueBrushAtPoint(application, application->mouse_x,
+                            application->mouse_y);
+      }
+      return 0;
+    case WM_MOUSELEAVE:
+      if (application) {
+        application->hovered = SIM_PIXEL_TYPE_COUNT;
+        application->tracking_mouse = false;
+      }
       return 0;
     case WM_LBUTTONUP:
     case WM_CAPTURECHANGED:
@@ -859,7 +1296,10 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam
         ReleaseCapture();
       return 0;
     case WM_KEYDOWN:
-      if (application && wparam >= '1' && wparam <= '9') {
+      if (application && wparam == '0') {
+        application->selected = SIM_PIXEL_EMPTY;
+        UpdateWindowTitle(application);
+      } else if (application && wparam >= '1' && wparam <= '9') {
         application->selected = (sim_pixel_type)(wparam - '0');
         UpdateWindowTitle(application);
       } else if (application && wparam >= 'A' && wparam <= 'D') {
@@ -886,6 +1326,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
   app application = {0};
   int exit_code = 1;
   application.selected = SIM_PIXEL_SAND;
+  application.hovered = SIM_PIXEL_TYPE_COUNT;
   QueryPerformanceFrequency(&application.fps_frequency);
   QueryPerformanceCounter(&application.fps_start);
   application.simulation_last = application.fps_start;
@@ -914,6 +1355,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     goto done;
   if (!CreateGpuResources(&application))
     goto done;
+  if (!CreateTextResources(&application))
+    goto done;
   UpdateWindowTitle(&application);
   exit_code = 0;
   if (smoke) {
@@ -930,9 +1373,21 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
       goto done;
     }
     if (!ApplyBrush(&application,
+                    sim_make_brush_command(SIM_PIXEL_EMPTY, SIM_WIDTH / 2,
+                                           SIM_HEIGHT / 3, 5, 2u)) ||
+        CountOccupiedPixels(&application) != 0u ||
+        !ApplyBrush(&application,
+                    sim_make_brush_command(SIM_PIXEL_SAND, SIM_WIDTH / 2,
+                                           SIM_HEIGHT / 3, 5, 3u)) ||
+        CountOccupiedPixels(&application) != brush_cells) {
+      fprintf(stderr, "erase brush verification failed\n");
+      exit_code = 35;
+      goto done;
+    }
+    if (!ApplyBrush(&application,
                     sim_make_brush_command(SIM_PIXEL_SAND,
                                            SIM_WIDTH / 2 + 100,
-                                           SIM_HEIGHT / 3, 5, 2u))) {
+                                           SIM_HEIGHT / 3, 5, 4u))) {
       exit_code = 6;
       goto done;
     }
@@ -1741,6 +2196,14 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     }
   }
 done:
+  Release(application.text.blend);
+  Release(application.text.sampler);
+  Release(application.text.input_layout);
+  Release(application.text.pixel_shader);
+  Release(application.text.vertex_shader);
+  Release(application.text.vertices);
+  Release(application.text.atlas_srv);
+  Release(application.text.atlas);
   Release(application.point_sampler);
   Release(application.pixel_shader);
   Release(application.vertex_shader);

@@ -12,7 +12,7 @@ bbs run -t pixelsim_app
 
 Run from the repository root: the executable compiles `assets/shaders/pixelsim.hlsl` at startup.
 
-- Click a colored **material swatch** in the two-row D3D palette, or press **1–9** / **A–D**, to select a material. The selected swatch has a white border.
+- Click a square button in the top-left D3D palette, or press **0–9** / **A–D**, to select a brush. **0** and the crossed-out first button select Erase; the other buttons select materials. The selected button has a white border, and hovering any button shows its name, shortcut, and behavior in a GPU-rendered tooltip.
 - Click once to submit one bounded brush command; hold and move to paint continuously. Input is mapped through the centered 16:9 simulation viewport, including after a window resize.
 - The window title reports the selected material and live presentation FPS (updated once per second).
 
@@ -22,7 +22,7 @@ The simulation is a 640 × 360 pair of `R32_UINT` GPU textures. Physics advances
 
 Each update uses five conflict-free compute dispatches. A 2 × 2 checkerboard material pass handles diagonal powder rolls, gases, displacement, and reactions, and a column-owned pass applies vertical acceleration to powders and liquids. Three in-place row-color dispatches then transfer liquid pressure; active rows are separated by three cells, so their two-row support footprints never overlap. Every active row is loaded cooperatively into group-shared memory, obstacle segments are identified in parallel, and shared atomics select at most one conservative source/destination swap per segment. All six color orders rotate across updates to balance ordering bias. Airborne liquid falls straight instead of treating other falling liquid as stable support, while a pool whose column depths differ by at most one cell is a stable discrete equilibrium. Vertical movement ray-marches every crossed cell and stops before obstacles, horizontal pressure never crosses a solid wall, and lava stops at water so accelerated motion cannot skip the reaction. The pixel shader masks the packed state and samples the resulting texture directly in a full-screen-triangle draw.
 
-The CPU never uploads the world texture. Mouse events enqueue 20-byte `sim_brush_command` values; an in-place GPU `ApplyBrush` dispatch touches only the clipped brush rectangle before the usual physics passes. Holding the mouse still does not repeatedly deposit material.
+The CPU never uploads the world texture. Mouse events enqueue 20-byte `sim_brush_command` values—including erase commands whose material type is empty—and an in-place GPU `ApplyBrush` dispatch touches only the clipped brush rectangle before the usual physics passes. Holding the mouse still does not repeatedly deposit material. UI text uses a one-time `stb_truetype` atlas built from the Windows Segoe UI font and a separate alpha-blended D3D11 overlay pass.
 
 | Family | Materials | Behavior |
 | --- | --- | --- |
