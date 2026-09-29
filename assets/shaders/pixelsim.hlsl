@@ -69,6 +69,9 @@ struct TextVertexOutput
 };
 
 Texture2D<float> FontAtlas : register(t0);
+Texture2D<float4> PostSource : register(t2);
+Texture2D<float4> BloomSource : register(t3);
+SamplerState LinearSampler : register(s1);
 
 uint Hash(uint2 p, uint salt)
 {
@@ -682,4 +685,48 @@ float4 DrawPixels(VertexOutput input) : SV_Target
     color = selected && border ? float4(1.0, 1.0, 1.0, 1.0) : swatch;
   }
   return color;
+}
+
+float4 DrawBloomEmission(VertexOutput input) : SV_Target
+{
+  uint2 cell = min(uint2(input.uv * SimulationSize), SimulationSize - 1u);
+  uint material = PixelType(StateIn[cell]);
+  if (material == FIRE)
+    return float4(PixelColor(material).rgb * 1.4, 1.0);
+  if (material == LAVA)
+    return float4(PixelColor(material).rgb * 1.2, 1.0);
+  if (material == ACID)
+    return float4(PixelColor(material).rgb * 0.9, 1.0);
+  return float4(0.0, 0.0, 0.0, 1.0);
+}
+
+float4 BlurBloom(float2 uv, float2 direction)
+{
+  uint width;
+  uint height;
+  PostSource.GetDimensions(width, height);
+  float2 texel = direction / float2(width, height);
+  float3 color = PostSource.Sample(LinearSampler, uv).rgb * 0.227027;
+  color += PostSource.Sample(LinearSampler, uv + texel * 1.384615).rgb * 0.316216;
+  color += PostSource.Sample(LinearSampler, uv - texel * 1.384615).rgb * 0.316216;
+  color += PostSource.Sample(LinearSampler, uv + texel * 3.230769).rgb * 0.070270;
+  color += PostSource.Sample(LinearSampler, uv - texel * 3.230769).rgb * 0.070270;
+  return float4(color, 1.0);
+}
+
+float4 BlurBloomHorizontal(VertexOutput input) : SV_Target
+{
+  return BlurBloom(input.uv, float2(1.0, 0.0));
+}
+
+float4 BlurBloomVertical(VertexOutput input) : SV_Target
+{
+  return BlurBloom(input.uv, float2(0.0, 1.0));
+}
+
+float4 CompositeBloom(VertexOutput input) : SV_Target
+{
+  float3 scene = PostSource.Sample(LinearSampler, input.uv).rgb;
+  float3 bloom = BloomSource.Sample(LinearSampler, input.uv).rgb;
+  return float4(saturate(scene + bloom * 0.75), 1.0);
 }

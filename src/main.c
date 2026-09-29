@@ -85,7 +85,18 @@ typedef struct app {
   ID3D11ComputeShader* brush_shader;
   ID3D11VertexShader* vertex_shader;
   ID3D11PixelShader* pixel_shader;
+  ID3D11PixelShader* bloom_emission_shader;
+  ID3D11PixelShader* bloom_blur_horizontal_shader;
+  ID3D11PixelShader* bloom_blur_vertical_shader;
+  ID3D11PixelShader* bloom_composite_shader;
   ID3D11SamplerState* point_sampler;
+  ID3D11SamplerState* linear_sampler;
+  ID3D11Texture2D* scene_texture;
+  ID3D11RenderTargetView* scene_target;
+  ID3D11ShaderResourceView* scene_srv;
+  ID3D11Texture2D* bloom_texture[2];
+  ID3D11RenderTargetView* bloom_target[2];
+  ID3D11ShaderResourceView* bloom_srv[2];
   text_renderer text;
   uint32_t read_state;
   uint32_t frame_index;
@@ -306,6 +317,72 @@ static bool CreateStateTexture(app* application, uint32_t index) {
          Check(ID3D11Device_CreateUnorderedAccessView(application->device, (ID3D11Resource*)application->state[index], NULL, &application->state_uav[index]), "CreateUnorderedAccessView");
 }
 
+static void ReleasePostProcessTargets(app* application) {
+  for (uint32_t index = 0; index < 2; ++index) {
+    Release(application->bloom_srv[index]);
+    Release(application->bloom_target[index]);
+    Release(application->bloom_texture[index]);
+    application->bloom_srv[index] = NULL;
+    application->bloom_target[index] = NULL;
+    application->bloom_texture[index] = NULL;
+  }
+  Release(application->scene_srv);
+  Release(application->scene_target);
+  Release(application->scene_texture);
+  application->scene_srv = NULL;
+  application->scene_target = NULL;
+  application->scene_texture = NULL;
+}
+
+static bool CreatePostProcessTexture(app* application,
+                                     uint32_t width,
+                                     uint32_t height,
+                                     ID3D11Texture2D** texture,
+                                     ID3D11RenderTargetView** target,
+                                     ID3D11ShaderResourceView** resource) {
+  D3D11_TEXTURE2D_DESC description = {0};
+  description.Width = width;
+  description.Height = height;
+  description.MipLevels = 1;
+  description.ArraySize = 1;
+  description.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  description.SampleDesc.Count = 1;
+  description.Usage = D3D11_USAGE_DEFAULT;
+  description.BindFlags =
+      D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+  return Check(ID3D11Device_CreateTexture2D(application->device, &description,
+                                            NULL, texture),
+               "CreateTexture2D post process") &&
+         Check(ID3D11Device_CreateRenderTargetView(
+                   application->device, (ID3D11Resource*)*texture, NULL,
+                   target),
+               "CreateRenderTargetView post process") &&
+         Check(ID3D11Device_CreateShaderResourceView(
+                   application->device, (ID3D11Resource*)*texture, NULL,
+                   resource),
+               "CreateShaderResourceView post process");
+}
+
+static bool CreatePostProcessTargets(app* application, int width, int height) {
+  ReleasePostProcessTargets(application);
+  const uint32_t bloom_width = (uint32_t)(width > 1 ? width / 2 : 1);
+  const uint32_t bloom_height = (uint32_t)(height > 1 ? height / 2 : 1);
+  if (!CreatePostProcessTexture(
+          application, (uint32_t)width, (uint32_t)height,
+          &application->scene_texture, &application->scene_target,
+          &application->scene_srv))
+    return false;
+  for (uint32_t index = 0; index < 2; ++index) {
+    if (!CreatePostProcessTexture(
+            application, bloom_width, bloom_height,
+            &application->bloom_texture[index],
+            &application->bloom_target[index],
+            &application->bloom_srv[index]))
+      return false;
+  }
+  return true;
+}
+
 static bool CreateGpuResources(app* application) {
   D3D11_BUFFER_DESC constants = {0};
   constants.ByteWidth = sizeof(gpu_frame_constants);
@@ -331,6 +408,13 @@ static bool CreateGpuResources(app* application) {
   sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
   sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
   if (!Check(ID3D11Device_CreateSamplerState(application->device, &sampler, &application->point_sampler), "CreateSamplerState"))
+    return false;
+
+  sampler.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  if (!Check(ID3D11Device_CreateSamplerState(
+                 application->device, &sampler,
+                 &application->linear_sampler),
+             "CreateSamplerState bloom"))
     return false;
 
   ID3DBlob* blob = NULL;
@@ -368,6 +452,46 @@ static bool CreateGpuResources(app* application) {
   if (!created || !CompileShader("DrawPixels", "ps_5_0", &blob))
     return false;
   created = Check(ID3D11Device_CreatePixelShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->pixel_shader), "CreatePixelShader");
+  Release(blob);
+  blob = NULL;
+  if (!created || !CompileShader("DrawBloomEmission", "ps_5_0", &blob))
+    return false;
+  created = Check(ID3D11Device_CreatePixelShader(
+                      application->device,
+                      ID3D10Blob_GetBufferPointer(blob),
+                      ID3D10Blob_GetBufferSize(blob), NULL,
+                      &application->bloom_emission_shader),
+                  "CreatePixelShader bloom emission");
+  Release(blob);
+  blob = NULL;
+  if (!created || !CompileShader("BlurBloomHorizontal", "ps_5_0", &blob))
+    return false;
+  created = Check(ID3D11Device_CreatePixelShader(
+                      application->device,
+                      ID3D10Blob_GetBufferPointer(blob),
+                      ID3D10Blob_GetBufferSize(blob), NULL,
+                      &application->bloom_blur_horizontal_shader),
+                  "CreatePixelShader bloom blur horizontal");
+  Release(blob);
+  blob = NULL;
+  if (!created || !CompileShader("BlurBloomVertical", "ps_5_0", &blob))
+    return false;
+  created = Check(ID3D11Device_CreatePixelShader(
+                      application->device,
+                      ID3D10Blob_GetBufferPointer(blob),
+                      ID3D10Blob_GetBufferSize(blob), NULL,
+                      &application->bloom_blur_vertical_shader),
+                  "CreatePixelShader bloom blur vertical");
+  Release(blob);
+  blob = NULL;
+  if (!created || !CompileShader("CompositeBloom", "ps_5_0", &blob))
+    return false;
+  created = Check(ID3D11Device_CreatePixelShader(
+                      application->device,
+                      ID3D10Blob_GetBufferPointer(blob),
+                      ID3D10Blob_GetBufferSize(blob), NULL,
+                      &application->bloom_composite_shader),
+                  "CreatePixelShader bloom composite");
   Release(blob);
   if (!created)
     return false;
@@ -830,6 +954,125 @@ static bool RenderTooltip(app* application) {
 
 static void UpdateFps(app* application);
 
+static void DrawPostProcessPass(app* application,
+                                ID3D11RenderTargetView* target,
+                                ID3D11PixelShader* shader,
+                                ID3D11ShaderResourceView* source,
+                                uint32_t width,
+                                uint32_t height) {
+  const FLOAT clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  ID3D11DeviceContext_OMSetRenderTargets(application->context, 1, &target,
+                                         NULL);
+  ID3D11DeviceContext_ClearRenderTargetView(application->context, target,
+                                            clear);
+  D3D11_VIEWPORT viewport = {0};
+  viewport.Width = (FLOAT)width;
+  viewport.Height = (FLOAT)height;
+  viewport.MaxDepth = 1.0f;
+  ID3D11DeviceContext_RSSetViewports(application->context, 1, &viewport);
+  ID3D11DeviceContext_IASetInputLayout(application->context, NULL);
+  ID3D11DeviceContext_IASetPrimitiveTopology(
+      application->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  ID3D11DeviceContext_VSSetShader(application->context,
+                                  application->vertex_shader, NULL, 0);
+  ID3D11DeviceContext_PSSetShader(application->context, shader, NULL, 0);
+  ID3D11DeviceContext_PSSetShaderResources(application->context, 2, 1,
+                                           &source);
+  ID3D11DeviceContext_PSSetSamplers(application->context, 1, 1,
+                                    &application->linear_sampler);
+  ID3D11DeviceContext_Draw(application->context, 3, 0);
+  {
+    ID3D11ShaderResourceView* null_source = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(application->context, 2, 1,
+                                             &null_source);
+  }
+}
+
+static void DrawBloomEmission(app* application,
+                              uint32_t bloom_width,
+                              uint32_t bloom_height) {
+  const FLOAT clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  ID3D11DeviceContext_OMSetRenderTargets(
+      application->context, 1, &application->bloom_target[0], NULL);
+  ID3D11DeviceContext_ClearRenderTargetView(
+      application->context, application->bloom_target[0], clear);
+  D3D11_VIEWPORT viewport = {0};
+  viewport.TopLeftX = (FLOAT)application->viewport.x * bloom_width /
+                      application->client_width;
+  viewport.TopLeftY = (FLOAT)application->viewport.y * bloom_height /
+                      application->client_height;
+  viewport.Width = (FLOAT)application->viewport.width * bloom_width /
+                   application->client_width;
+  viewport.Height = (FLOAT)application->viewport.height * bloom_height /
+                    application->client_height;
+  viewport.MaxDepth = 1.0f;
+  ID3D11DeviceContext_RSSetViewports(application->context, 1, &viewport);
+  ID3D11DeviceContext_IASetInputLayout(application->context, NULL);
+  ID3D11DeviceContext_IASetPrimitiveTopology(
+      application->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  ID3D11DeviceContext_VSSetShader(application->context,
+                                  application->vertex_shader, NULL, 0);
+  ID3D11DeviceContext_PSSetShader(application->context,
+                                  application->bloom_emission_shader, NULL,
+                                  0);
+  ID3D11ShaderResourceView* state =
+      application->state_srv[application->read_state];
+  ID3D11Buffer* constants = application->constants;
+  ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1,
+                                           &state);
+  ID3D11DeviceContext_PSSetSamplers(application->context, 0, 1,
+                                    &application->point_sampler);
+  ID3D11DeviceContext_PSSetConstantBuffers(application->context, 0, 1,
+                                           &constants);
+  ID3D11DeviceContext_Draw(application->context, 3, 0);
+  {
+    ID3D11ShaderResourceView* null_state = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1,
+                                             &null_state);
+  }
+}
+
+static void RenderBloom(app* application) {
+  const uint32_t bloom_width =
+      (uint32_t)(application->client_width > 1
+                     ? application->client_width / 2
+                     : 1);
+  const uint32_t bloom_height =
+      (uint32_t)(application->client_height > 1
+                     ? application->client_height / 2
+                     : 1);
+  DrawBloomEmission(application, bloom_width, bloom_height);
+  DrawPostProcessPass(application, application->bloom_target[1],
+                      application->bloom_blur_horizontal_shader,
+                      application->bloom_srv[0], bloom_width, bloom_height);
+  DrawPostProcessPass(application, application->bloom_target[0],
+                      application->bloom_blur_vertical_shader,
+                      application->bloom_srv[1], bloom_width, bloom_height);
+
+  ID3D11DeviceContext_OMSetRenderTargets(application->context, 1,
+                                         &application->backbuffer, NULL);
+  D3D11_VIEWPORT viewport = {0};
+  viewport.Width = (FLOAT)application->client_width;
+  viewport.Height = (FLOAT)application->client_height;
+  viewport.MaxDepth = 1.0f;
+  ID3D11DeviceContext_RSSetViewports(application->context, 1, &viewport);
+  ID3D11ShaderResourceView* sources[] = {
+      application->scene_srv,
+      application->bloom_srv[0],
+  };
+  ID3D11DeviceContext_PSSetShader(application->context,
+                                  application->bloom_composite_shader, NULL,
+                                  0);
+  ID3D11DeviceContext_PSSetShaderResources(application->context, 2, 2,
+                                           sources);
+  ID3D11DeviceContext_Draw(application->context, 3, 0);
+  {
+    ID3D11ShaderResourceView* null_sources[] = {NULL, NULL};
+    ID3D11DeviceContext_PSSetShaderResources(application->context, 2, 2,
+                                             null_sources);
+  }
+}
+
 static bool Render(app* application) {
   if (application->viewport.width <= 0 || application->viewport.height <= 0) {
     Sleep(10);
@@ -858,8 +1101,10 @@ static bool Render(app* application) {
       return false;
   }
   FLOAT clear[] = {0.02f, 0.03f, 0.04f, 1.0f};
-  ID3D11DeviceContext_OMSetRenderTargets(application->context, 1, &application->backbuffer, NULL);
-  ID3D11DeviceContext_ClearRenderTargetView(application->context, application->backbuffer, clear);
+  ID3D11DeviceContext_OMSetRenderTargets(application->context, 1,
+                                         &application->scene_target, NULL);
+  ID3D11DeviceContext_ClearRenderTargetView(application->context,
+                                            application->scene_target, clear);
   D3D11_VIEWPORT simulation_viewport = {0};
   simulation_viewport.TopLeftX = (FLOAT)application->viewport.x;
   simulation_viewport.TopLeftY = (FLOAT)application->viewport.y;
@@ -875,12 +1120,14 @@ static bool Render(app* application) {
   ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1, &state);
   ID3D11DeviceContext_PSSetSamplers(application->context, 0, 1, &application->point_sampler);
   ID3D11DeviceContext_PSSetConstantBuffers(application->context, 0, 1, &constants);
+  ID3D11DeviceContext_IASetInputLayout(application->context, NULL);
   ID3D11DeviceContext_IASetPrimitiveTopology(application->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   ID3D11DeviceContext_Draw(application->context, 3, 0);
   {
     ID3D11ShaderResourceView* null_state = NULL;
     ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1, &null_state);
   }
+  RenderBloom(application);
   if (!RenderTooltip(application))
     return false;
   if (!Check(IDXGISwapChain_Present(application->swap_chain, 1, 0), "Present"))
@@ -942,6 +1189,7 @@ static bool ResizeSwapChain(app* application, int width, int height) {
     return true;
 
   ID3D11DeviceContext_OMSetRenderTargets(application->context, 0, NULL, NULL);
+  ReleasePostProcessTargets(application);
   Release(application->backbuffer);
   application->backbuffer = NULL;
   if (!Check(IDXGISwapChain_ResizeBuffers(application->swap_chain, 0,
@@ -963,6 +1211,8 @@ static bool ResizeSwapChain(app* application, int width, int height) {
     return false;
   }
   Release(backbuffer);
+  if (!CreatePostProcessTargets(application, width, height))
+    return false;
 
   D3D11_VIEWPORT viewport = {0};
   viewport.TopLeftX = (FLOAT)application->viewport.x;
@@ -2178,6 +2428,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
       exit_code = 227;
       goto done;
     }
+    if (!Render(&application)) {
+      exit_code = 228;
+      goto done;
+    }
     goto done;
   }
   MSG message;
@@ -2196,6 +2450,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     }
   }
 done:
+  ReleasePostProcessTargets(&application);
   Release(application.text.blend);
   Release(application.text.sampler);
   Release(application.text.input_layout);
@@ -2205,6 +2460,11 @@ done:
   Release(application.text.atlas_srv);
   Release(application.text.atlas);
   Release(application.point_sampler);
+  Release(application.linear_sampler);
+  Release(application.bloom_composite_shader);
+  Release(application.bloom_blur_vertical_shader);
+  Release(application.bloom_blur_horizontal_shader);
+  Release(application.bloom_emission_shader);
   Release(application.pixel_shader);
   Release(application.vertex_shader);
   Release(application.brush_shader);
