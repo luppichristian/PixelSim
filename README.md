@@ -12,7 +12,7 @@ bbs run -t pixelsim_app
 
 Run from the repository root: the executable compiles `assets/shaders/pixelsim.hlsl` at startup.
 
-- Click a colored **material swatch** in the D3D top palette, or press **1–8**, to select wood, iron, sand, rust, water, lava, smoke, or steam. The selected swatch has a white border.
+- Click a colored **material swatch** in the two-row D3D palette, or press **1–9** / **A–D**, to select a material. The selected swatch has a white border.
 - Click once to submit one bounded brush command; hold and move to paint continuously. Input is mapped through the centered 16:9 simulation viewport, including after a window resize.
 - The window title reports the selected material and live presentation FPS (updated once per second).
 
@@ -26,10 +26,10 @@ The CPU never uploads the world texture. Mouse events enqueue 20-byte `sim_brush
 
 | Family | Materials | Behavior |
 | --- | --- | --- |
-| Solid | wood, iron | Iron is immovable until adjacent rust gradually erodes it; nearby lava can ignite wood into smoke. |
-| Powder | sand, rust | Accelerates while falling, rolls diagonally, and sinks through less-dense liquids; rust propagates into adjacent iron. |
-| Liquid | water, lava | Accelerates straight down while airborne, transfers pressure across connected liquid after landing, and levels into broad stable pools; water meeting lava becomes steam while lava solidifies. |
-| Gas | smoke, steam | Rises and drifts; steam occasionally condenses. |
+| Solid | wood, iron, bedrock | Iron is immovable until adjacent rust or acid erodes it. Bedrock is permanent and resists heat, rust, and acid. |
+| Powder | sand, rust, salt | Powders accelerate, roll, and sink through less-dense liquids. Rust propagates into iron; salt grains gradually dissolve into adjacent water and turn it into visibly lighter brine. |
+| Liquid | water, lava, acid, oil | Liquids accelerate and level under pressure. Water cools lava and extinguishes fire, green acid dissolves ordinary materials, and buoyant oil floats on water and burns. |
+| Gas | smoke, steam, fire | Gases rise and drift. Steam can condense; fire spreads through wood and oil before aging into smoke. |
 
 ## Validate
 
@@ -39,7 +39,7 @@ bbs build -t pixelsim_app
 build/default-windows-x86_64/bin/Debug/PixelSim.exe --smoke
 ```
 
-`PixelSim.exe --smoke` creates the D3D11 pipeline, compiles all runtime shaders, submits two separate radius-five sand brushes, advances fixed physics updates, and verifies material conservation. Exact-cell GPU scenarios cover sand/water displacement, matched powder/liquid acceleration, liquid-column conservation, both powder diagonals, resting-liquid stability, rust erosion, accelerated lava/water contact, vertical collision clipping, pressure containment, and bulk-water leveling. The basin fixture requires every interior column to be filled, limits surface variation to one cell, rejects internal holes, and hashes the material grid across 64 additional updates to catch visible resting-state jitter. A D3D11 timestamp query then measures 120 complete five-dispatch updates and fails if their average exceeds the 8.33 ms budget for 120 Hz.
+`PixelSim.exe --smoke` creates the D3D11 pipeline, compiles all runtime shaders, submits two separate radius-five sand brushes, advances fixed physics updates, and verifies material conservation. Exact-cell GPU scenarios cover sand/water displacement, matched powder/liquid acceleration, liquid-column conservation, both powder diagonals, resting-liquid stability, rust and acid erosion, fire/oil ignition, gradual salt dissolution, acid/salt non-reaction, bedrock resistance, oil buoyancy, accelerated lava/water contact, vertical collision clipping, pressure containment, and bulk-water leveling. The basin fixture requires every interior column to be filled, limits surface variation to one cell, rejects internal holes, and hashes the material grid across 64 additional updates to catch visible resting-state jitter. A D3D11 timestamp query then measures 120 complete five-dispatch updates and fails if their average exceeds the 8.33 ms budget for 120 Hz.
 
 ## Layout
 

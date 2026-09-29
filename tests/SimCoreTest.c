@@ -9,6 +9,11 @@ static void TestMaterialProperties(void) {
   const sim_material water = sim_get_material(SIM_PIXEL_WATER);
   const sim_material lava = sim_get_material(SIM_PIXEL_LAVA);
   const sim_material steam = sim_get_material(SIM_PIXEL_STEAM);
+  const sim_material acid = sim_get_material(SIM_PIXEL_ACID);
+  const sim_material fire = sim_get_material(SIM_PIXEL_FIRE);
+  const sim_material oil = sim_get_material(SIM_PIXEL_OIL);
+  const sim_material salt = sim_get_material(SIM_PIXEL_SALT);
+  const sim_material bedrock = sim_get_material(SIM_PIXEL_BEDROCK);
 
   assert(sand.phase == SIM_PHASE_POWDER);
   assert(sand.density > water.density);
@@ -16,12 +21,27 @@ static void TestMaterialProperties(void) {
   assert(lava.temperature > 900.0f);
   assert(steam.phase == SIM_PHASE_GAS);
   assert(steam.buoyancy > 0.0f);
+  assert(acid.phase == SIM_PHASE_LIQUID);
+  assert(fire.phase == SIM_PHASE_GAS);
+  assert(fire.temperature > lava.temperature);
+  assert(oil.phase == SIM_PHASE_LIQUID);
+  assert(oil.density < water.density);
+  assert(salt.phase == SIM_PHASE_POWDER);
+  assert(salt.density > water.density);
+  assert(bedrock.phase == SIM_PHASE_SOLID);
+  assert(bedrock.density > lava.density);
+  assert((SIM_DISSOLVED_SALT_MASK & SIM_PIXEL_TYPE_MASK) == 0u);
 }
 
 static void TestMaterialNamesMatchUserInterface(void) {
   assert(strcmp(sim_material_name(SIM_PIXEL_WOOD), "Wood") == 0);
   assert(strcmp(sim_material_name(SIM_PIXEL_LAVA), "Lava") == 0);
   assert(strcmp(sim_material_name(SIM_PIXEL_STEAM), "Steam") == 0);
+  assert(strcmp(sim_material_name(SIM_PIXEL_ACID), "Acid") == 0);
+  assert(strcmp(sim_material_name(SIM_PIXEL_FIRE), "Fire") == 0);
+  assert(strcmp(sim_material_name(SIM_PIXEL_OIL), "Oil") == 0);
+  assert(strcmp(sim_material_name(SIM_PIXEL_SALT), "Salt") == 0);
+  assert(strcmp(sim_material_name(SIM_PIXEL_BEDROCK), "Bedrock") == 0);
 }
 
 static void TestBrushCommandClampsToSimulationBounds(void) {
@@ -81,6 +101,8 @@ static void TestPaletteHitTestingUsesSimulationCells(void) {
 
   assert(sim_palette_material_at(viewport, 20, 20) == SIM_PIXEL_WOOD);
   assert(sim_palette_material_at(viewport, 228, 20) == SIM_PIXEL_SAND);
+  assert(sim_palette_material_at(viewport, 20, 56) == SIM_PIXEL_ACID);
+  assert(sim_palette_material_at(viewport, 436, 56) == SIM_PIXEL_BEDROCK);
   assert(sim_palette_material_at(viewport, 20, 100) == SIM_PIXEL_EMPTY);
 }
 

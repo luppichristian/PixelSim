@@ -7,8 +7,15 @@
 #define LAVA 6u
 #define SMOKE 7u
 #define STEAM 8u
+#define ACID 9u
+#define FIRE 10u
+#define OIL 11u
+#define SALT 12u
+#define BEDROCK 13u
 #define TYPE_MASK 0xffu
+#define FIRE_AGE_SHIFT 8u
 #define VELOCITY_Y_SHIFT 16u
+#define DISSOLVED_SALT_MASK 0x01000000u
 #define MAX_FALL_SPEED 8
 #define ROW_CAPACITY 640u
 #define ROW_THREADS 64u
@@ -56,11 +63,21 @@ uint Hash(uint2 p, uint salt)
 }
 
 uint PixelType(uint pixel) { return pixel & TYPE_MASK; }
-bool IsSolid(uint p) { p = PixelType(p); return p == WOOD || p == IRON; }
-bool IsPowder(uint p) { p = PixelType(p); return p == SAND || p == RUST; }
-bool IsLiquid(uint p) { p = PixelType(p); return p == WATER || p == LAVA; }
-bool IsGas(uint p) { p = PixelType(p); return p == SMOKE || p == STEAM; }
+bool IsSolid(uint p) { p = PixelType(p); return p == WOOD || p == IRON || p == BEDROCK; }
+bool IsPowder(uint p) { p = PixelType(p); return p == SAND || p == RUST || p == SALT; }
+bool IsLiquid(uint p) { p = PixelType(p); return p == WATER || p == LAVA || p == ACID || p == OIL; }
+bool IsGas(uint p) { p = PixelType(p); return p == SMOKE || p == STEAM || p == FIRE; }
 bool IsOpen(uint p) { return PixelType(p) == EMPTY || IsGas(p); }
+
+uint FireAge(uint pixel) { return (pixel >> FIRE_AGE_SHIFT) & 0xffu; }
+
+void AgeFire(inout uint pixel)
+{
+  if (PixelType(pixel) != FIRE)
+    return;
+  uint age = FireAge(pixel);
+  pixel = age >= 45u ? SMOKE : FIRE | ((age + 1u) << FIRE_AGE_SHIFT);
+}
 
 uint VelocityY(uint pixel)
 {
@@ -87,9 +104,13 @@ bool CanFallInto(uint mover, uint resident)
   resident = PixelType(resident);
   if (resident == EMPTY || IsGas(resident))
     return true;
-  if ((mover == SAND || mover == RUST) && resident == WATER)
+  if (IsPowder(mover) && IsLiquid(resident) && resident != LAVA)
     return true;
   if (mover == RUST && resident == LAVA)
+    return true;
+  if (mover == WATER && resident == OIL)
+    return true;
+  if (mover == ACID && (resident == WATER || resident == OIL))
     return true;
   return false;
 }
@@ -146,6 +167,52 @@ void ReactPair(inout uint first, inout uint second, uint random)
       first = IRON;
       second = STEAM;
     }
+  }
+  else if ((random & 63u) == 0u &&
+           ((firstType == WATER && secondType == SALT) ||
+            (firstType == SALT && secondType == WATER)))
+  {
+    if (firstType == SALT && (second & DISSOLVED_SALT_MASK) == 0u)
+    {
+      first = EMPTY;
+      second |= DISSOLVED_SALT_MASK;
+    }
+    else if (secondType == SALT && (first & DISSOLVED_SALT_MASK) == 0u)
+    {
+      second = EMPTY;
+      first |= DISSOLVED_SALT_MASK;
+    }
+  }
+  else if ((firstType == FIRE && secondType == WATER) ||
+           (firstType == WATER && secondType == FIRE))
+  {
+    if (firstType == FIRE)
+      first = STEAM;
+    else
+      second = STEAM;
+  }
+  else if ((firstType == FIRE || firstType == LAVA) &&
+           (secondType == WOOD || secondType == OIL))
+  {
+    second = FIRE;
+  }
+  else if ((secondType == FIRE || secondType == LAVA) &&
+           (firstType == WOOD || firstType == OIL))
+  {
+    first = FIRE;
+  }
+  else if (firstType == ACID && secondType != ACID && secondType != WATER &&
+           secondType != EMPTY && secondType != FIRE && secondType != SMOKE &&
+           secondType != STEAM && secondType != SALT &&
+           secondType != BEDROCK)
+  {
+    second = EMPTY;
+  }
+  else if (secondType == ACID && firstType != ACID && firstType != WATER &&
+           firstType != EMPTY && firstType != FIRE && firstType != SMOKE &&
+           firstType != STEAM && firstType != SALT && firstType != BEDROCK)
+  {
+    first = EMPTY;
   }
   else if ((random & 7u) == 0u && firstType == WOOD && secondType == LAVA)
   {
@@ -282,6 +349,11 @@ void RisePair(inout uint top, inout uint bottom)
     c = WATER;
   if (PixelType(d) == STEAM && ((random >> 6) & 1023u) == 0u)
     d = WATER;
+
+  AgeFire(a);
+  AgeFire(b);
+  AgeFire(c);
+  AgeFire(d);
 
   if (topLeft.x >= 0 && topLeft.y >= 0 && topLeft.x < int(SimulationSize.x) &&
       topLeft.y < int(SimulationSize.y))
@@ -493,6 +565,8 @@ void MoveLiquidsHorizontal(uint3 groupId : SV_GroupID,
   bool scanRight = ((y + FrameIndex) & 1u) == 0u;
   TransferSharedLiquidPressure(lane, WATER, scanRight);
   TransferSharedLiquidPressure(lane, LAVA, !scanRight);
+  TransferSharedLiquidPressure(lane, ACID, scanRight);
+  TransferSharedLiquidPressure(lane, OIL, !scanRight);
 
   for (uint x = lane; x < SimulationSize.x; x += ROW_THREADS)
     StateOut[uint2(x, y)] = RowState[x];
@@ -509,6 +583,8 @@ VertexOutput FullscreenVertex(uint id : SV_VertexID)
 
 float4 PixelColor(uint pixel)
 {
+  bool containsDissolvedSalt =
+      PixelType(pixel) == WATER && (pixel & DISSOLVED_SALT_MASK) != 0u;
   pixel = PixelType(pixel);
   if (pixel == WOOD)
     return float4(0.38, 0.20, 0.07, 1.0);
@@ -519,13 +595,24 @@ float4 PixelColor(uint pixel)
   if (pixel == RUST)
     return float4(0.56, 0.18, 0.05, 1.0);
   if (pixel == WATER)
-    return float4(0.05, 0.34, 0.82, 1.0);
+    return containsDissolvedSalt ? float4(0.20, 0.48, 0.84, 1.0)
+                                 : float4(0.05, 0.34, 0.82, 1.0);
   if (pixel == LAVA)
     return float4(1.0, 0.20, 0.01, 1.0);
   if (pixel == SMOKE)
     return float4(0.22, 0.23, 0.25, 1.0);
   if (pixel == STEAM)
     return float4(0.78, 0.84, 0.88, 1.0);
+  if (pixel == ACID)
+    return float4(0.18, 0.95, 0.16, 1.0);
+  if (pixel == FIRE)
+    return float4(1.0, 0.58, 0.04, 1.0);
+  if (pixel == OIL)
+    return float4(0.20, 0.15, 0.05, 1.0);
+  if (pixel == SALT)
+    return float4(0.92, 0.90, 0.82, 1.0);
+  if (pixel == BEDROCK)
+    return float4(0.16, 0.17, 0.20, 1.0);
   return float4(0.025, 0.03, 0.045, 1.0);
 }
 
@@ -539,18 +626,21 @@ float4 DrawPixels(VertexOutput input) : SV_Target
   // D3D11 owns this surface, so draw the clickable material palette in the same
   // pass.
   int2 palettePosition = int2(cell) - int2(8, 6);
-  int button = palettePosition.x / 52 + 1;
-  int localX = palettePosition.x - (button - 1) * 52;
+  int paletteRow = palettePosition.y / 18;
+  int paletteColumn = palettePosition.x / 52;
+  int button = paletteRow * 8 + paletteColumn + 1;
+  int localX = palettePosition.x - paletteColumn * 52;
+  int localY = palettePosition.y - paletteRow * 18;
   bool insidePalette = palettePosition.x >= 0 && palettePosition.y >= 0 &&
-                       palettePosition.y < 14 && button >= int(WOOD) &&
-                       button <= int(STEAM) && localX < 48;
+                       paletteColumn < 8 && localY < 14 &&
+                       button >= int(WOOD) && button <= int(BEDROCK) &&
+                       localX < 48;
   if (insidePalette)
   {
     uint material = uint(button);
     float4 swatch = PixelColor(material);
     bool selected = material == SelectedPixel;
-    bool border = localX < 2 || localX >= 46 || palettePosition.y < 2 ||
-                  palettePosition.y >= 12;
+    bool border = localX < 2 || localX >= 46 || localY < 2 || localY >= 12;
     color = selected && border ? float4(1.0, 1.0, 1.0, 1.0) : swatch;
   }
   return color;

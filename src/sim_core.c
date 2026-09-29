@@ -10,6 +10,11 @@ static const sim_material k_materials[SIM_PIXEL_TYPE_COUNT] = {
     {SIM_PHASE_LIQUID, 3.10f, 1200.0f, 0.0f},
     {SIM_PHASE_GAS, 0.02f, 180.0f, 0.85f},
     {SIM_PHASE_GAS, 0.01f, 110.0f, 1.00f},
+    {SIM_PHASE_LIQUID, 1.20f, 20.0f, 0.0f},
+    {SIM_PHASE_GAS, 0.01f, 1400.0f, 1.20f},
+    {SIM_PHASE_LIQUID, 0.80f, 20.0f, 0.0f},
+    {SIM_PHASE_POWDER, 2.10f, 20.0f, 0.0f},
+    {SIM_PHASE_SOLID, 20.0f, 20.0f, 0.0f},
 };
 
 static const char* k_material_names[SIM_PIXEL_TYPE_COUNT] = {
@@ -22,6 +27,11 @@ static const char* k_material_names[SIM_PIXEL_TYPE_COUNT] = {
     "Lava",
     "Smoke",
     "Steam",
+    "Acid",
+    "Fire",
+    "Oil",
+    "Salt",
+    "Bedrock",
 };
 
 sim_material sim_get_material(sim_pixel_type type) {
@@ -94,14 +104,16 @@ sim_pixel_type sim_palette_material_at(sim_viewport viewport, int client_x, int 
   int cell_x;
   int cell_y;
   if (!sim_viewport_to_cell(viewport, client_x, client_y, &cell_x, &cell_y) ||
-      cell_y < SIM_PALETTE_Y ||
-      cell_y >= SIM_PALETTE_Y + SIM_PALETTE_SWATCH_HEIGHT ||
-      cell_x < SIM_PALETTE_X)
+      cell_y < SIM_PALETTE_Y || cell_x < SIM_PALETTE_X)
     return SIM_PIXEL_EMPTY;
 
-  int offset = cell_x - SIM_PALETTE_X;
-  int material = offset / SIM_PALETTE_SWATCH_STRIDE + SIM_PIXEL_WOOD;
+  const int row = (cell_y - SIM_PALETTE_Y) / SIM_PALETTE_ROW_STRIDE;
+  const int local_y = (cell_y - SIM_PALETTE_Y) % SIM_PALETTE_ROW_STRIDE;
+  const int offset = cell_x - SIM_PALETTE_X;
+  const int column = offset / SIM_PALETTE_SWATCH_STRIDE;
+  const int material = row * SIM_PALETTE_COLUMNS + column + SIM_PIXEL_WOOD;
   if (material >= SIM_PIXEL_TYPE_COUNT ||
+      column >= SIM_PALETTE_COLUMNS || local_y >= SIM_PALETTE_SWATCH_HEIGHT ||
       offset % SIM_PALETTE_SWATCH_STRIDE >= SIM_PALETTE_SWATCH_WIDTH)
     return SIM_PIXEL_EMPTY;
   return (sim_pixel_type)material;

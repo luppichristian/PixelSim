@@ -478,7 +478,7 @@ static bool Render(app* application) {
 
 static void UpdateWindowTitle(app* application) {
   char title[128];
-  snprintf(title, sizeof(title), "PixelSim | %s | FPS: %u | Click the top palette or press 1-8", sim_material_name(application->selected), application->fps);
+  snprintf(title, sizeof(title), "PixelSim | %s | FPS: %u | Palette keys: 1-9, A-D", sim_material_name(application->selected), application->fps);
   SetWindowTextA(application->window, title);
 }
 
@@ -598,7 +598,7 @@ static uint32_t CountOccupiedPixels(app* application) {
   return count;
 }
 
-static uint32_t ReadStatePixel(app* application, uint32_t x, uint32_t y) {
+static uint32_t ReadStateValue(app* application, uint32_t x, uint32_t y) {
   D3D11_TEXTURE2D_DESC description;
   ID3D11Texture2D_GetDesc(application->state[application->read_state],
                           &description);
@@ -626,11 +626,15 @@ static uint32_t ReadStatePixel(app* application, uint32_t x, uint32_t y) {
   }
   const uint32_t* row =
       (const uint32_t*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
-  const uint32_t pixel = row[x] & SIM_PIXEL_TYPE_MASK;
+  const uint32_t pixel = row[x];
   ID3D11DeviceContext_Unmap(application->context,
                             (ID3D11Resource*)staging, 0);
   Release(staging);
   return pixel;
+}
+
+static uint32_t ReadStatePixel(app* application, uint32_t x, uint32_t y) {
+  return ReadStateValue(application, x, y) & SIM_PIXEL_TYPE_MASK;
 }
 
 static bool FindSinglePixelInRow(app* application,
@@ -855,8 +859,11 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam
         ReleaseCapture();
       return 0;
     case WM_KEYDOWN:
-      if (application && wparam >= '1' && wparam <= '8') {
+      if (application && wparam >= '1' && wparam <= '9') {
         application->selected = (sim_pixel_type)(wparam - '0');
+        UpdateWindowTitle(application);
+      } else if (application && wparam >= 'A' && wparam <= 'D') {
+        application->selected = (sim_pixel_type)(SIM_PIXEL_FIRE + wparam - 'A');
         UpdateWindowTitle(application);
       }
       return 0;
@@ -888,7 +895,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
   window_class.lpfnWndProc = WindowProcedure;
   window_class.hCursor = LoadCursor(NULL, IDC_CROSS);
   RegisterClassA(&window_class);
-  application.window = CreateWindowExA(0, window_class.lpszClassName, "PixelSim — 1 Wood  2 Iron  3 Sand  4 Rust  5 Water  6 Lava  7 Smoke  8 Steam", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, instance, NULL);
+  application.window = CreateWindowExA(0, window_class.lpszClassName, "PixelSim", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, instance, NULL);
   if (!application.window)
     return 1;
   SetWindowLongPtr(application.window, GWLP_USERDATA, (LONG_PTR)&application);
@@ -1346,6 +1353,118 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
         ReadStatePixel(&application, 51, 50) != SIM_PIXEL_RUST ||
         CountOccupiedPixels(&application) != 6u) {
       exit_code = 26;
+      goto done;
+    }
+
+    // New material reactions are checked in isolated blocks before gravity can
+    // move their participants away from the intended interface.
+    ClearSimulation(&application);
+    if (!UpdateConstants(&application) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_ACID, 49, 49, 47u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 50, 49, 48u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_FIRE, 53, 49, 49u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_OIL, 54, 49, 50u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_SALT, 57, 49, 51u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 58, 49, 52u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_ACID, 61, 49, 53u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 62, 49, 54u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_ACID, 65, 49, 55u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_SALT, 66, 49, 56u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_FIRE, 69, 49, 57u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 70, 49, 58u)) {
+      exit_code = 6;
+      goto done;
+    }
+    Dispatch(&application, application.simulate_shader);
+    if (ReadStatePixel(&application, 49, 49) != SIM_PIXEL_ACID ||
+        ReadStatePixel(&application, 50, 49) != SIM_PIXEL_EMPTY ||
+        ReadStatePixel(&application, 54, 49) != SIM_PIXEL_FIRE ||
+        ReadStatePixel(&application, 57, 49) != SIM_PIXEL_SALT ||
+        ReadStatePixel(&application, 58, 49) != SIM_PIXEL_WATER ||
+        ReadStatePixel(&application, 61, 49) != SIM_PIXEL_ACID ||
+        ReadStatePixel(&application, 62, 49) != SIM_PIXEL_BEDROCK ||
+        ReadStatePixel(&application, 65, 49) != SIM_PIXEL_ACID ||
+        ReadStatePixel(&application, 66, 49) != SIM_PIXEL_SALT ||
+        ReadStatePixel(&application, 69, 49) != SIM_PIXEL_STEAM) {
+      fprintf(stderr, "new material reaction verification failed\n");
+      exit_code = 30;
+      goto done;
+    }
+
+    // Salt remains granular on initial contact, then gradually transfers into
+    // a neighboring water cell as persistent dissolved-salt metadata.
+    ClearSimulation(&application);
+    if (!UpdateConstants(&application) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_SALT, 81, 87, 69u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 82, 87, 70u)) {
+      exit_code = 6;
+      goto done;
+    }
+    for (int x = 80; x <= 83; ++x) {
+      if (!ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, x, 88,
+                          (uint32_t)(x + 71))) {
+        exit_code = 6;
+        goto done;
+      }
+    }
+    if (!RunSimulationUpdate(&application) ||
+        ReadStatePixel(&application, 81, 87) != SIM_PIXEL_SALT ||
+        (ReadStateValue(&application, 82, 87) & SIM_DISSOLVED_SALT_MASK) != 0u) {
+      fprintf(stderr, "salt dissolved immediately on water contact\n");
+      exit_code = 33;
+      goto done;
+    }
+    for (uint32_t update = 1; update < 64u; ++update) {
+      if (!RunSimulationUpdate(&application)) {
+        exit_code = 6;
+        goto done;
+      }
+    }
+    if (ReadStatePixel(&application, 81, 87) != SIM_PIXEL_EMPTY ||
+        ReadStatePixel(&application, 82, 87) != SIM_PIXEL_WATER ||
+        (ReadStateValue(&application, 82, 87) & SIM_DISSOLVED_SALT_MASK) == 0u) {
+      fprintf(stderr, "gradual salt dissolution verification failed\n");
+      exit_code = 34;
+      goto done;
+    }
+
+    // Water is denser than oil, so an oil layer rises when water falls into it.
+    ClearSimulation(&application);
+    if (!UpdateConstants(&application) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 99, 59u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_OIL, 100, 100, 60u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 99, 100, 61u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 101, 100, 62u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 100, 101, 63u) ||
+        !RunSimulationUpdate(&application) ||
+        ReadStatePixel(&application, 100, 99) != SIM_PIXEL_OIL ||
+        ReadStatePixel(&application, 100, 100) != SIM_PIXEL_WATER) {
+      fprintf(stderr, "oil buoyancy verification failed\n");
+      exit_code = 31;
+      goto done;
+    }
+
+    // Fire has a bounded lifetime and leaves smoke when it cannot spread.
+    ClearSimulation(&application);
+    if (!UpdateConstants(&application) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_FIRE, 100, 100, 64u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 100, 99, 65u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 99, 100, 66u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 101, 100, 67u) ||
+        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 100, 101, 68u)) {
+      exit_code = 6;
+      goto done;
+    }
+    for (uint32_t update = 0; update < 46u; ++update) {
+      if (!RunSimulationUpdate(&application)) {
+        exit_code = 6;
+        goto done;
+      }
+    }
+    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_SMOKE ||
+        CountOccupiedPixels(&application) != 5u) {
+      fprintf(stderr, "fire lifetime verification failed\n");
+      exit_code = 32;
       goto done;
     }
 
