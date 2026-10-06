@@ -3,6 +3,17 @@ name("PixelSim")
 ver(0.1.0)
 
 targets(
+  header_lib(
+    id(stb_truetype)
+    output(stb_truetype)
+    repo(
+      link("https://github.com/nothings/stb.git")
+      commit("2c980bb59875b0d32144a71867fbdebb2f77cd20")
+    )
+    units(stb_truetype.h)
+    include_dirs(.)
+  )
+
   consoleless(
     id(pixelsim_app)
     output(PixelSim)
@@ -10,17 +21,8 @@ targets(
     stdver(c11)
     warning_level(medium)
     units(src/main.c src/sim_core.c)
-    include_dirs(src third_party)
-    link_libs(d3d11 dxgi dxguid d3dcompiler user32 gdi32)
-  )
-
-  test(
-    id(sim_core_test)
-    output(sim_core_test)
-    lang(c)
-    stdver(c11)
-    warning_level(high)
-    units(tests/SimCoreTest.c src/sim_core.c)
     include_dirs(src)
+    dependencies(stb_truetype)
+    link_libs(d3d11 dxgi dxguid d3dcompiler user32 gdi32)
   )
 )

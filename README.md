@@ -1,20 +1,10 @@
 # PixelSim
 
-A small **Noita-style cellular-material sandbox** for Windows, implemented in C with D3D11 and built through [bbs](https://github.com/luppichristian/bbs).
+A small **Noita-style cellular-material sandbox** for Windows, implemented in C with D3D11.
 
 ![GPU pipeline](https://img.shields.io/badge/simulation-D3D11%20compute%20shader-2ea44f) ![Language](https://img.shields.io/badge/language-C-555555)
 
-## Run
-
-```bash
-bbs run -t pixelsim_app
-```
-
-Run from the repository root: the executable compiles `assets/shaders/pixelsim.hlsl` at startup.
-
-- Click a square button in the top-left D3D palette, or press **0–9** / **A–D**, to select a brush. **0** and the crossed-out first button select Erase; the other buttons select materials. The selected button has a white border, and hovering any button shows its name, shortcut, and behavior in a GPU-rendered tooltip.
-- Click once to submit one bounded brush command; hold and move to paint continuously. Input is mapped through the centered 16:9 simulation viewport, including after a window resize.
-- The window title reports the selected material and live presentation FPS (updated once per second).
+![Water, acid, lava, sand, and solid basins](assets/screenshots/mixed-material-basins.png)
 
 ## Design
 
@@ -30,20 +20,3 @@ The CPU never uploads the world texture. Mouse events enqueue 20-byte `sim_brush
 | Powder | sand, rust, salt | Powders accelerate, roll, and sink through less-dense liquids. Rust propagates into iron; salt grains gradually dissolve into adjacent water and turn it into visibly lighter brine. |
 | Liquid | water, lava, acid, oil | Liquids accelerate and level under pressure. Water cools lava and extinguishes fire, green acid dissolves ordinary materials, and buoyant oil floats on water and burns. |
 | Gas | smoke, steam, fire | Gases rise and drift. Steam can condense; fire spreads through wood and oil before aging into smoke. |
-
-## Validate
-
-```bash
-bbs test -t sim_core_test
-bbs build -t pixelsim_app
-build/default-windows-x86_64/bin/Debug/PixelSim.exe --smoke
-```
-
-`PixelSim.exe --smoke` creates the D3D11 pipeline, compiles all runtime shaders, submits two separate radius-five sand brushes, advances fixed physics updates, and verifies material conservation. Exact-cell GPU scenarios cover sand/water displacement, matched powder/liquid acceleration, liquid-column conservation, both powder diagonals, resting-liquid stability, rust and acid erosion, fire/oil ignition, gradual salt dissolution, acid/salt non-reaction, bedrock resistance, oil buoyancy, accelerated lava/water contact, vertical collision clipping, pressure containment, and bulk-water leveling. The basin fixture requires every interior column to be filled, limits surface variation to one cell, rejects internal holes, and hashes the material grid across 64 additional updates to catch visible resting-state jitter. A D3D11 timestamp query then measures 120 complete five-dispatch updates and fails if their average exceeds the 8.33 ms budget for 120 Hz. The smoke path also renders and presents one bloom-composited frame.
-
-## Layout
-
-- `src/main.c` — Win32/D3D11 app, compute dispatches, direct draw, input.
-- `src/sim_core.*` — material metadata, viewport mapping, input queue, and the CPU-to-GPU brush command contract.
-- `assets/shaders/pixelsim.hlsl` — brush, simulation, and render shaders.
-- `tests/SimCoreTest.c` — deterministic material, viewport, palette, queue, and brush-footprint tests.
