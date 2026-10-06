@@ -20,9 +20,31 @@ targets(
     lang(c)
     stdver(c11)
     warning_level(medium)
-    units(src/main.c src/sim_core.c)
+    units(
+      src/main.c
+      src/sim_brush.c
+      src/sim_clock.c
+      src/sim_palette.c
+      src/sim_viewport.c
+    )
     include_dirs(src)
     dependencies(stb_truetype)
     link_libs(d3d11 dxgi dxguid d3dcompiler user32 gdi32)
+  )
+
+  test(
+    id(sim_core_test)
+    output(sim_core_test)
+    lang(c)
+    stdver(c11)
+    warning_level(high)
+    units(
+      tests/sim_core_test.c
+      src/sim_brush.c
+      src/sim_clock.c
+      src/sim_palette.c
+      src/sim_viewport.c
+    )
+    include_dirs(src)
   )
 )

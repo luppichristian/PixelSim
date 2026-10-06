@@ -21,7 +21,11 @@
 #pragma warning(pop)
 #endif
 
-#include "sim_core.h"
+#include "sim.h"
+#include "sim_brush.h"
+#include "sim_clock.h"
+#include "sim_palette.h"
+#include "sim_viewport.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -120,12 +124,12 @@ typedef struct app {
   bool tracking_mouse;
 } app;
 
-static void Release(void* object) {
+static void release(void* object) {
   if (object != NULL)
     IUnknown_Release((IUnknown*)object);
 }
 
-static bool Check(HRESULT result, const char* where) {
+static bool check(HRESULT result, const char* where) {
   if (FAILED(result)) {
     char message[128];
     snprintf(message, sizeof(message), "%s failed: 0x%08lx", where, (unsigned long)result);
@@ -135,7 +139,7 @@ static bool Check(HRESULT result, const char* where) {
   return true;
 }
 
-static bool CompileShader(const char* entry, const char* target, ID3DBlob** blob) {
+static bool compile_shader(const char* entry, const char* target, ID3DBlob** blob) {
   ID3DBlob* errors = NULL;
   HRESULT result = D3DCompileFromFile(L"assets/shaders/pixelsim.hlsl", NULL,
                                       D3D_COMPILE_STANDARD_FILE_INCLUDE, entry, target,
@@ -144,14 +148,14 @@ static bool CompileShader(const char* entry, const char* target, ID3DBlob** blob
     const char* text = errors ? (const char*)ID3D10Blob_GetBufferPointer(errors) : "shader file not found";
     fprintf(stderr, "shader %s compilation failed:\n%s\n", entry, text);
     MessageBoxA(NULL, text, "PixelSim shader compilation", MB_ICONERROR);
-    Release(errors);
+    release(errors);
     return false;
   }
-  Release(errors);
+  release(errors);
   return true;
 }
 
-static bool LoadUiFont(uint8_t** font_data) {
+static bool load_ui_font(uint8_t** font_data) {
   char windows_directory[MAX_PATH];
   char font_path[MAX_PATH];
   if (!GetWindowsDirectoryA(windows_directory, MAX_PATH))
@@ -186,10 +190,10 @@ static bool LoadUiFont(uint8_t** font_data) {
   return true;
 }
 
-static bool CreateTextResources(app* application) {
+static bool create_text_resources(app* application) {
   uint8_t* font_data = NULL;
   uint8_t* atlas_data = calloc(FONT_ATLAS_SIZE, FONT_ATLAS_SIZE);
-  if (!atlas_data || !LoadUiFont(&font_data)) {
+  if (!atlas_data || !load_ui_font(&font_data)) {
     free(atlas_data);
     free(font_data);
     MessageBoxA(NULL, "Could not load the Windows UI font.", "PixelSim",
@@ -222,8 +226,8 @@ static bool CreateTextResources(app* application) {
   const HRESULT atlas_result = ID3D11Device_CreateTexture2D(
       application->device, &atlas, &atlas_initial, &application->text.atlas);
   free(atlas_data);
-  if (!Check(atlas_result, "CreateTexture2D font atlas") ||
-      !Check(ID3D11Device_CreateShaderResourceView(
+  if (!check(atlas_result, "CreateTexture2D font atlas") ||
+      !check(ID3D11Device_CreateShaderResourceView(
                  application->device,
                  (ID3D11Resource*)application->text.atlas, NULL,
                  &application->text.atlas_srv),
@@ -235,15 +239,15 @@ static bool CreateTextResources(app* application) {
   vertices.Usage = D3D11_USAGE_DYNAMIC;
   vertices.BindFlags = D3D11_BIND_VERTEX_BUFFER;
   vertices.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-  if (!Check(ID3D11Device_CreateBuffer(application->device, &vertices, NULL,
+  if (!check(ID3D11Device_CreateBuffer(application->device, &vertices, NULL,
                                        &application->text.vertices),
              "CreateBuffer text vertices"))
     return false;
 
   ID3DBlob* blob = NULL;
-  if (!CompileShader("TextVertex", "vs_5_0", &blob))
+  if (!compile_shader("text_vertex", "vs_5_0", &blob))
     return false;
-  bool created = Check(ID3D11Device_CreateVertexShader(
+  bool created = check(ID3D11Device_CreateVertexShader(
                            application->device,
                            ID3D10Blob_GetBufferPointer(blob),
                            ID3D10Blob_GetBufferSize(blob), NULL,
@@ -258,24 +262,24 @@ static bool CreateTextResources(app* application) {
        offsetof(text_vertex, color), D3D11_INPUT_PER_VERTEX_DATA, 0},
   };
   if (created)
-    created = Check(ID3D11Device_CreateInputLayout(
+    created = check(ID3D11Device_CreateInputLayout(
                         application->device, layout,
                         sizeof(layout) / sizeof(layout[0]),
                         ID3D10Blob_GetBufferPointer(blob),
                         ID3D10Blob_GetBufferSize(blob),
                         &application->text.input_layout),
                     "CreateInputLayout text");
-  Release(blob);
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("DrawText", "ps_5_0", &blob))
+  if (!created || !compile_shader("draw_text", "ps_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreatePixelShader(
+  created = check(ID3D11Device_CreatePixelShader(
                       application->device,
                       ID3D10Blob_GetBufferPointer(blob),
                       ID3D10Blob_GetBufferSize(blob), NULL,
                       &application->text.pixel_shader),
                   "CreatePixelShader text");
-  Release(blob);
+  release(blob);
   if (!created)
     return false;
 
@@ -283,7 +287,7 @@ static bool CreateTextResources(app* application) {
   sampler.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
   sampler.AddressU = sampler.AddressV = sampler.AddressW =
       D3D11_TEXTURE_ADDRESS_CLAMP;
-  if (!Check(ID3D11Device_CreateSamplerState(
+  if (!check(ID3D11Device_CreateSamplerState(
                  application->device, &sampler, &application->text.sampler),
              "CreateSamplerState text"))
     return false;
@@ -297,12 +301,12 @@ static bool CreateTextResources(app* application) {
   blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
   blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
   blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-  return Check(ID3D11Device_CreateBlendState(
+  return check(ID3D11Device_CreateBlendState(
                    application->device, &blend, &application->text.blend),
                "CreateBlendState text");
 }
 
-static bool CreateStateTexture(app* application, uint32_t index) {
+static bool create_state_texture(app* application, uint32_t index) {
   D3D11_TEXTURE2D_DESC texture = {0};
   texture.Width = SIM_WIDTH;
   texture.Height = SIM_HEIGHT;
@@ -312,29 +316,29 @@ static bool CreateStateTexture(app* application, uint32_t index) {
   texture.SampleDesc.Count = 1;
   texture.Usage = D3D11_USAGE_DEFAULT;
   texture.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-  return Check(ID3D11Device_CreateTexture2D(application->device, &texture, NULL, &application->state[index]), "CreateTexture2D") &&
-         Check(ID3D11Device_CreateShaderResourceView(application->device, (ID3D11Resource*)application->state[index], NULL, &application->state_srv[index]), "CreateShaderResourceView") &&
-         Check(ID3D11Device_CreateUnorderedAccessView(application->device, (ID3D11Resource*)application->state[index], NULL, &application->state_uav[index]), "CreateUnorderedAccessView");
+  return check(ID3D11Device_CreateTexture2D(application->device, &texture, NULL, &application->state[index]), "CreateTexture2D") &&
+         check(ID3D11Device_CreateShaderResourceView(application->device, (ID3D11Resource*)application->state[index], NULL, &application->state_srv[index]), "CreateShaderResourceView") &&
+         check(ID3D11Device_CreateUnorderedAccessView(application->device, (ID3D11Resource*)application->state[index], NULL, &application->state_uav[index]), "CreateUnorderedAccessView");
 }
 
-static void ReleasePostProcessTargets(app* application) {
+static void release_post_process_targets(app* application) {
   for (uint32_t index = 0; index < 2; ++index) {
-    Release(application->bloom_srv[index]);
-    Release(application->bloom_target[index]);
-    Release(application->bloom_texture[index]);
+    release(application->bloom_srv[index]);
+    release(application->bloom_target[index]);
+    release(application->bloom_texture[index]);
     application->bloom_srv[index] = NULL;
     application->bloom_target[index] = NULL;
     application->bloom_texture[index] = NULL;
   }
-  Release(application->scene_srv);
-  Release(application->scene_target);
-  Release(application->scene_texture);
+  release(application->scene_srv);
+  release(application->scene_target);
+  release(application->scene_texture);
   application->scene_srv = NULL;
   application->scene_target = NULL;
   application->scene_texture = NULL;
 }
 
-static bool CreatePostProcessTexture(app* application,
+static bool create_post_process_texture(app* application,
                                      uint32_t width,
                                      uint32_t height,
                                      ID3D11Texture2D** texture,
@@ -350,30 +354,30 @@ static bool CreatePostProcessTexture(app* application,
   description.Usage = D3D11_USAGE_DEFAULT;
   description.BindFlags =
       D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-  return Check(ID3D11Device_CreateTexture2D(application->device, &description,
+  return check(ID3D11Device_CreateTexture2D(application->device, &description,
                                             NULL, texture),
                "CreateTexture2D post process") &&
-         Check(ID3D11Device_CreateRenderTargetView(
+         check(ID3D11Device_CreateRenderTargetView(
                    application->device, (ID3D11Resource*)*texture, NULL,
                    target),
                "CreateRenderTargetView post process") &&
-         Check(ID3D11Device_CreateShaderResourceView(
+         check(ID3D11Device_CreateShaderResourceView(
                    application->device, (ID3D11Resource*)*texture, NULL,
                    resource),
                "CreateShaderResourceView post process");
 }
 
-static bool CreatePostProcessTargets(app* application, int width, int height) {
-  ReleasePostProcessTargets(application);
+static bool create_post_process_targets(app* application, int width, int height) {
+  release_post_process_targets(application);
   const uint32_t bloom_width = (uint32_t)(width > 1 ? width / 2 : 1);
   const uint32_t bloom_height = (uint32_t)(height > 1 ? height / 2 : 1);
-  if (!CreatePostProcessTexture(
+  if (!create_post_process_texture(
           application, (uint32_t)width, (uint32_t)height,
           &application->scene_texture, &application->scene_target,
           &application->scene_srv))
     return false;
   for (uint32_t index = 0; index < 2; ++index) {
-    if (!CreatePostProcessTexture(
+    if (!create_post_process_texture(
             application, bloom_width, bloom_height,
             &application->bloom_texture[index],
             &application->bloom_target[index],
@@ -383,13 +387,13 @@ static bool CreatePostProcessTargets(app* application, int width, int height) {
   return true;
 }
 
-static bool CreateGpuResources(app* application) {
+static bool create_gpu_resources(app* application) {
   D3D11_BUFFER_DESC constants = {0};
   constants.ByteWidth = sizeof(gpu_frame_constants);
   constants.Usage = D3D11_USAGE_DYNAMIC;
   constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-  if (!Check(ID3D11Device_CreateBuffer(application->device, &constants, NULL, &application->constants), "CreateBuffer constants"))
+  if (!check(ID3D11Device_CreateBuffer(application->device, &constants, NULL, &application->constants), "CreateBuffer constants"))
     return false;
 
   D3D11_BUFFER_DESC brush = {0};
@@ -399,103 +403,103 @@ static bool CreateGpuResources(app* application) {
   brush.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   brush.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
   brush.StructureByteStride = sizeof(sim_brush_command);
-  if (!Check(ID3D11Device_CreateBuffer(application->device, &brush, NULL, &application->brush_buffer), "CreateBuffer brush"))
+  if (!check(ID3D11Device_CreateBuffer(application->device, &brush, NULL, &application->brush_buffer), "CreateBuffer brush"))
     return false;
-  if (!Check(ID3D11Device_CreateShaderResourceView(application->device, (ID3D11Resource*)application->brush_buffer, NULL, &application->brush_srv), "CreateShaderResourceView brush"))
+  if (!check(ID3D11Device_CreateShaderResourceView(application->device, (ID3D11Resource*)application->brush_buffer, NULL, &application->brush_srv), "CreateShaderResourceView brush"))
     return false;
 
   D3D11_SAMPLER_DESC sampler = {0};
   sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
   sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-  if (!Check(ID3D11Device_CreateSamplerState(application->device, &sampler, &application->point_sampler), "CreateSamplerState"))
+  if (!check(ID3D11Device_CreateSamplerState(application->device, &sampler, &application->point_sampler), "CreateSamplerState"))
     return false;
 
   sampler.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-  if (!Check(ID3D11Device_CreateSamplerState(
+  if (!check(ID3D11Device_CreateSamplerState(
                  application->device, &sampler,
                  &application->linear_sampler),
              "CreateSamplerState bloom"))
     return false;
 
   ID3DBlob* blob = NULL;
-  if (!CompileShader("Simulate", "cs_5_0", &blob))
+  if (!compile_shader("simulate", "cs_5_0", &blob))
     return false;
-  bool created = Check(ID3D11Device_CreateComputeShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->simulate_shader), "CreateComputeShader");
-  Release(blob);
+  bool created = check(ID3D11Device_CreateComputeShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->simulate_shader), "CreateComputeShader");
+  release(blob);
   blob = NULL;
   if (!created ||
-      !CompileShader("MoveFallingMaterialsVertical", "cs_5_0", &blob))
+      !compile_shader("move_falling_materials_vertical", "cs_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreateComputeShader(
+  created = check(ID3D11Device_CreateComputeShader(
                       application->device,
                       ID3D10Blob_GetBufferPointer(blob),
                       ID3D10Blob_GetBufferSize(blob), NULL,
                       &application->falling_vertical_shader),
                   "CreateComputeShader falling materials vertical");
-  Release(blob);
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("MoveLiquidsHorizontal", "cs_5_0", &blob))
+  if (!created || !compile_shader("move_liquids_horizontal", "cs_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreateComputeShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->liquid_horizontal_shader), "CreateComputeShader liquid horizontal");
-  Release(blob);
+  created = check(ID3D11Device_CreateComputeShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->liquid_horizontal_shader), "CreateComputeShader liquid horizontal");
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("ApplyBrush", "cs_5_0", &blob))
+  if (!created || !compile_shader("apply_brush", "cs_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreateComputeShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->brush_shader), "CreateComputeShader brush");
-  Release(blob);
+  created = check(ID3D11Device_CreateComputeShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->brush_shader), "CreateComputeShader brush");
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("FullscreenVertex", "vs_5_0", &blob))
+  if (!created || !compile_shader("fullscreen_vertex", "vs_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreateVertexShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->vertex_shader), "CreateVertexShader");
-  Release(blob);
+  created = check(ID3D11Device_CreateVertexShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->vertex_shader), "CreateVertexShader");
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("DrawPixels", "ps_5_0", &blob))
+  if (!created || !compile_shader("draw_pixels", "ps_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreatePixelShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->pixel_shader), "CreatePixelShader");
-  Release(blob);
+  created = check(ID3D11Device_CreatePixelShader(application->device, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), NULL, &application->pixel_shader), "CreatePixelShader");
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("DrawBloomEmission", "ps_5_0", &blob))
+  if (!created || !compile_shader("draw_bloom_emission", "ps_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreatePixelShader(
+  created = check(ID3D11Device_CreatePixelShader(
                       application->device,
                       ID3D10Blob_GetBufferPointer(blob),
                       ID3D10Blob_GetBufferSize(blob), NULL,
                       &application->bloom_emission_shader),
                   "CreatePixelShader bloom emission");
-  Release(blob);
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("BlurBloomHorizontal", "ps_5_0", &blob))
+  if (!created || !compile_shader("blur_bloom_horizontal", "ps_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreatePixelShader(
+  created = check(ID3D11Device_CreatePixelShader(
                       application->device,
                       ID3D10Blob_GetBufferPointer(blob),
                       ID3D10Blob_GetBufferSize(blob), NULL,
                       &application->bloom_blur_horizontal_shader),
                   "CreatePixelShader bloom blur horizontal");
-  Release(blob);
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("BlurBloomVertical", "ps_5_0", &blob))
+  if (!created || !compile_shader("blur_bloom_vertical", "ps_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreatePixelShader(
+  created = check(ID3D11Device_CreatePixelShader(
                       application->device,
                       ID3D10Blob_GetBufferPointer(blob),
                       ID3D10Blob_GetBufferSize(blob), NULL,
                       &application->bloom_blur_vertical_shader),
                   "CreatePixelShader bloom blur vertical");
-  Release(blob);
+  release(blob);
   blob = NULL;
-  if (!created || !CompileShader("CompositeBloom", "ps_5_0", &blob))
+  if (!created || !compile_shader("composite_bloom", "ps_5_0", &blob))
     return false;
-  created = Check(ID3D11Device_CreatePixelShader(
+  created = check(ID3D11Device_CreatePixelShader(
                       application->device,
                       ID3D10Blob_GetBufferPointer(blob),
                       ID3D10Blob_GetBufferSize(blob), NULL,
                       &application->bloom_composite_shader),
                   "CreatePixelShader bloom composite");
-  Release(blob);
+  release(blob);
   if (!created)
     return false;
-  if (!CreateStateTexture(application, 0) || !CreateStateTexture(application, 1))
+  if (!create_state_texture(application, 0) || !create_state_texture(application, 1))
     return false;
   const UINT empty[4] = {0, 0, 0, 0};
   ID3D11DeviceContext_ClearUnorderedAccessViewUint(application->context,
@@ -507,12 +511,12 @@ static bool CreateGpuResources(app* application) {
   return true;
 }
 
-static bool UpdateConstants(app* application) {
+static bool update_constants(app* application) {
   D3D11_MAPPED_SUBRESOURCE mapped;
   HRESULT result = ID3D11DeviceContext_Map(
       application->context, (ID3D11Resource*)application->constants, 0,
       D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-  if (!Check(result, "Map frame constants"))
+  if (!check(result, "Map frame constants"))
     return false;
   gpu_frame_constants* constants = mapped.pData;
   constants->frame_index = application->frame_index;
@@ -534,7 +538,7 @@ static bool UpdateConstants(app* application) {
   return true;
 }
 
-static void Dispatch(app* application, ID3D11ComputeShader* shader) {
+static void dispatch(app* application, ID3D11ComputeShader* shader) {
   uint32_t write_state = 1u - application->read_state;
   ID3D11ShaderResourceView* srvs[] = {application->state_srv[application->read_state], application->brush_srv};
   ID3D11UnorderedAccessView* uavs[] = {application->state_uav[write_state]};
@@ -568,9 +572,9 @@ static void Dispatch(app* application, ID3D11ComputeShader* shader) {
   application->read_state = write_state;
 }
 
-static bool DispatchHorizontalInPlace(app* application, uint32_t phase) {
+static bool dispatch_horizontal_in_place(app* application, uint32_t phase) {
   application->horizontal_phase = phase;
-  if (!UpdateConstants(application))
+  if (!update_constants(application))
     return false;
 
   ID3D11UnorderedAccessView* state =
@@ -594,7 +598,7 @@ static bool DispatchHorizontalInPlace(app* application, uint32_t phase) {
   return true;
 }
 
-static bool RunSimulationUpdate(app* application) {
+static bool run_simulation_update(app* application) {
   ID3D11ComputeShader* ping_pong_passes[] = {
       application->simulate_shader,
       application->falling_vertical_shader,
@@ -602,10 +606,10 @@ static bool RunSimulationUpdate(app* application) {
   _Static_assert(sizeof(ping_pong_passes) / sizeof(ping_pong_passes[0]) == 2u,
                  "the local and vertical passes ping-pong state");
 
-  if (!UpdateConstants(application))
+  if (!update_constants(application))
     return false;
   for (uint32_t pass = 0; pass < 2u; ++pass)
-    Dispatch(application, ping_pong_passes[pass]);
+    dispatch(application, ping_pong_passes[pass]);
   static const uint32_t phase_orders[6][3] = {
       {2u, 1u, 0u},
       {0u, 2u, 1u},
@@ -617,104 +621,25 @@ static bool RunSimulationUpdate(app* application) {
   const uint32_t phase_order = application->frame_index % 6u;
   for (uint32_t pass = 0; pass < 3u; ++pass) {
     const uint32_t phase = phase_orders[phase_order][pass];
-    if (!DispatchHorizontalInPlace(application, phase))
+    if (!dispatch_horizontal_in_place(application, phase))
       return false;
   }
   ++application->frame_index;
   return true;
 }
 
-static bool MeasureSimulationGpuMilliseconds(app* application,
-                                             uint32_t update_count,
-                                             double* milliseconds_per_update) {
-  D3D11_QUERY_DESC disjoint_description = {
-      D3D11_QUERY_TIMESTAMP_DISJOINT,
-      0,
-  };
-  D3D11_QUERY_DESC timestamp_description = {
-      D3D11_QUERY_TIMESTAMP,
-      0,
-  };
-  ID3D11Query* disjoint_query = NULL;
-  ID3D11Query* start_query = NULL;
-  ID3D11Query* end_query = NULL;
-  if (FAILED(ID3D11Device_CreateQuery(application->device,
-                                      &disjoint_description,
-                                      &disjoint_query)) ||
-      FAILED(ID3D11Device_CreateQuery(application->device,
-                                      &timestamp_description, &start_query)) ||
-      FAILED(ID3D11Device_CreateQuery(application->device,
-                                      &timestamp_description, &end_query))) {
-    Release(disjoint_query);
-    Release(start_query);
-    Release(end_query);
-    return false;
-  }
-
-  ID3D11DeviceContext_Begin(application->context,
-                            (ID3D11Asynchronous*)disjoint_query);
-  ID3D11DeviceContext_End(application->context,
-                          (ID3D11Asynchronous*)start_query);
-  for (uint32_t update = 0; update < update_count; ++update) {
-    if (!RunSimulationUpdate(application)) {
-      Release(disjoint_query);
-      Release(start_query);
-      Release(end_query);
-      return false;
-    }
-  }
-  ID3D11DeviceContext_End(application->context,
-                          (ID3D11Asynchronous*)end_query);
-  ID3D11DeviceContext_End(application->context,
-                          (ID3D11Asynchronous*)disjoint_query);
-  ID3D11DeviceContext_Flush(application->context);
-
-  D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {0};
-  uint64_t start = 0;
-  uint64_t end = 0;
-  bool ready = false;
-  for (uint32_t attempt = 0; attempt < 10000u; ++attempt) {
-    const HRESULT disjoint_result = ID3D11DeviceContext_GetData(
-        application->context, (ID3D11Asynchronous*)disjoint_query, &disjoint,
-        sizeof(disjoint), 0);
-    const HRESULT start_result = ID3D11DeviceContext_GetData(
-        application->context, (ID3D11Asynchronous*)start_query, &start,
-        sizeof(start), 0);
-    const HRESULT end_result = ID3D11DeviceContext_GetData(
-        application->context, (ID3D11Asynchronous*)end_query, &end,
-        sizeof(end), 0);
-    if (FAILED(disjoint_result) || FAILED(start_result) || FAILED(end_result))
-      break;
-    if (disjoint_result == S_OK && start_result == S_OK && end_result == S_OK) {
-      ready = true;
-      break;
-    }
-    Sleep(1);
-  }
-
-  Release(disjoint_query);
-  Release(start_query);
-  Release(end_query);
-  if (!ready || disjoint.Disjoint || disjoint.Frequency == 0 || end < start)
-    return false;
-  *milliseconds_per_update =
-      ((double)(end - start) * 1000.0) /
-      ((double)disjoint.Frequency * (double)update_count);
-  return true;
-}
-
-static bool ApplyBrush(app* application, sim_brush_command command) {
+static bool apply_brush(app* application, sim_brush_command command) {
   D3D11_MAPPED_SUBRESOURCE mapped;
   HRESULT result = ID3D11DeviceContext_Map(
       application->context, (ID3D11Resource*)application->brush_buffer, 0,
       D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-  if (!Check(result, "Map brush command"))
+  if (!check(result, "Map brush command"))
     return false;
   *(sim_brush_command*)mapped.pData = command;
   ID3D11DeviceContext_Unmap(application->context,
                             (ID3D11Resource*)application->brush_buffer, 0);
   application->brush_bounds = sim_clip_brush_bounds(command);
-  if (!UpdateConstants(application))
+  if (!update_constants(application))
     return false;
   ID3D11ShaderResourceView* brush = application->brush_srv;
   ID3D11UnorderedAccessView* state =
@@ -742,7 +667,7 @@ static bool ApplyBrush(app* application, sim_brush_command command) {
   return true;
 }
 
-static float TextWidth(const app* application, const char* text) {
+static float text_width(const app* application, const char* text) {
   float width = 0.0f;
   for (const unsigned char* character = (const unsigned char*)text; *character;
        ++character) {
@@ -755,7 +680,7 @@ static float TextWidth(const app* application, const char* text) {
   return width;
 }
 
-static void SetTextVertex(text_vertex* vertex,
+static void set_text_vertex(text_vertex* vertex,
                           float x,
                           float y,
                           float u,
@@ -770,7 +695,7 @@ static void SetTextVertex(text_vertex* vertex,
   memcpy(vertex->color, color, sizeof(vertex->color));
 }
 
-static void AddTextQuad(app* application,
+static void add_text_quad(app* application,
                         text_vertex* vertices,
                         uint32_t* vertex_count,
                         float x0,
@@ -785,22 +710,22 @@ static void AddTextQuad(app* application,
   if (*vertex_count + 6u > TEXT_MAX_VERTICES)
     return;
   text_vertex* quad = vertices + *vertex_count;
-  SetTextVertex(&quad[0], x0, y0, u0, v0, color, application->client_width,
+  set_text_vertex(&quad[0], x0, y0, u0, v0, color, application->client_width,
                 application->client_height);
-  SetTextVertex(&quad[1], x1, y0, u1, v0, color, application->client_width,
+  set_text_vertex(&quad[1], x1, y0, u1, v0, color, application->client_width,
                 application->client_height);
-  SetTextVertex(&quad[2], x1, y1, u1, v1, color, application->client_width,
+  set_text_vertex(&quad[2], x1, y1, u1, v1, color, application->client_width,
                 application->client_height);
-  SetTextVertex(&quad[3], x0, y0, u0, v0, color, application->client_width,
+  set_text_vertex(&quad[3], x0, y0, u0, v0, color, application->client_width,
                 application->client_height);
-  SetTextVertex(&quad[4], x1, y1, u1, v1, color, application->client_width,
+  set_text_vertex(&quad[4], x1, y1, u1, v1, color, application->client_width,
                 application->client_height);
-  SetTextVertex(&quad[5], x0, y1, u0, v1, color, application->client_width,
+  set_text_vertex(&quad[5], x0, y1, u0, v1, color, application->client_width,
                 application->client_height);
   *vertex_count += 6u;
 }
 
-static void AddText(app* application,
+static void add_text(app* application,
                     text_vertex* vertices,
                     uint32_t* vertex_count,
                     const char* text,
@@ -818,53 +743,23 @@ static void AddText(app* application,
     stbtt_GetBakedQuad(application->text.characters, FONT_ATLAS_SIZE,
                        FONT_ATLAS_SIZE, *character - FONT_FIRST_CHARACTER,
                        &pen_x, &pen_y, &quad, 1);
-    AddTextQuad(application, vertices, vertex_count, quad.x0, quad.y0, quad.x1,
+    add_text_quad(application, vertices, vertex_count, quad.x0, quad.y0, quad.x1,
                 quad.y1, quad.s0, quad.t0, quad.s1, quad.t1, color);
   }
 }
 
-static char MaterialShortcut(sim_pixel_type material) {
-  if (material == SIM_PIXEL_EMPTY)
-    return '0';
-  if (material >= SIM_PIXEL_WOOD && material <= SIM_PIXEL_ACID)
-    return (char)('0' + material);
-  if (material >= SIM_PIXEL_FIRE && material <= SIM_PIXEL_BEDROCK)
-    return (char)('A' + material - SIM_PIXEL_FIRE);
-  return '?';
-}
-
-static const char* MaterialUiName(sim_pixel_type material) {
-  return material == SIM_PIXEL_EMPTY ? "Erase" : sim_material_name(material);
-}
-
-static bool RenderTooltip(app* application) {
-  static const char* descriptions[SIM_PIXEL_TYPE_COUNT] = {
-      "Remove material from the brush area.",
-      "Rigid fuel that catches fire near heat.",
-      "Heavy solid that rust and acid can erode.",
-      "Granular powder that falls and piles up.",
-      "Granular corrosion that spreads through iron.",
-      "Dense liquid that cools lava and extinguishes fire.",
-      "Hot liquid that ignites fuel and turns water to steam.",
-      "Light gas that rises and drifts.",
-      "Hot vapor that rises and can condense into water.",
-      "Corrosive liquid that dissolves most materials.",
-      "Hot gas that spreads through wood and oil.",
-      "Buoyant liquid fuel that floats on water.",
-      "Granular mineral that slowly dissolves in water.",
-      "Permanent solid that resists reactions.",
-  };
+static bool render_tooltip(app* application) {
   if (application->hovered >= SIM_PIXEL_TYPE_COUNT ||
       application->client_width <= 0 || application->client_height <= 0)
     return true;
 
   char title[64];
   snprintf(title, sizeof(title), "%s  [%c]",
-           MaterialUiName(application->hovered),
-           MaterialShortcut(application->hovered));
-  const char* description = descriptions[application->hovered];
-  float tooltip_width = TextWidth(application, title);
-  const float description_width = TextWidth(application, description);
+           sim_palette_name(application->hovered),
+           sim_palette_shortcut(application->hovered));
+  const char* description = sim_palette_description(application->hovered);
+  float tooltip_width = text_width(application, title);
+  const float description_width = text_width(application, description);
   if (description_width > tooltip_width)
     tooltip_width = description_width;
   tooltip_width += 20.0f;
@@ -888,24 +783,24 @@ static bool RenderTooltip(app* application) {
   const float border[4] = {0.42f, 0.46f, 0.52f, 1.0f};
   const float title_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   const float description_color[4] = {0.82f, 0.85f, 0.90f, 1.0f};
-  AddTextQuad(application, cpu_vertices, &vertex_count, tooltip_x + 3.0f,
+  add_text_quad(application, cpu_vertices, &vertex_count, tooltip_x + 3.0f,
               tooltip_y + 3.0f, tooltip_x + tooltip_width + 3.0f,
               tooltip_y + tooltip_height + 3.0f, white_pixel, white_pixel,
               white_pixel, white_pixel, shadow);
-  AddTextQuad(application, cpu_vertices, &vertex_count, tooltip_x, tooltip_y,
+  add_text_quad(application, cpu_vertices, &vertex_count, tooltip_x, tooltip_y,
               tooltip_x + tooltip_width, tooltip_y + tooltip_height,
               white_pixel, white_pixel, white_pixel, white_pixel, border);
-  AddTextQuad(application, cpu_vertices, &vertex_count, tooltip_x + 1.0f,
+  add_text_quad(application, cpu_vertices, &vertex_count, tooltip_x + 1.0f,
               tooltip_y + 1.0f, tooltip_x + tooltip_width - 1.0f,
               tooltip_y + tooltip_height - 1.0f, white_pixel, white_pixel,
               white_pixel, white_pixel, background);
-  AddText(application, cpu_vertices, &vertex_count, title, tooltip_x + 10.0f,
+  add_text(application, cpu_vertices, &vertex_count, title, tooltip_x + 10.0f,
           tooltip_y + 21.0f, title_color);
-  AddText(application, cpu_vertices, &vertex_count, description,
+  add_text(application, cpu_vertices, &vertex_count, description,
           tooltip_x + 10.0f, tooltip_y + 43.0f, description_color);
 
   D3D11_MAPPED_SUBRESOURCE mapped;
-  if (!Check(ID3D11DeviceContext_Map(
+  if (!check(ID3D11DeviceContext_Map(
                  application->context,
                  (ID3D11Resource*)application->text.vertices, 0,
                  D3D11_MAP_WRITE_DISCARD, 0, &mapped),
@@ -952,9 +847,9 @@ static bool RenderTooltip(app* application) {
   return true;
 }
 
-static void UpdateFps(app* application);
+static void update_fps(app* application);
 
-static void DrawPostProcessPass(app* application,
+static void draw_post_process_pass(app* application,
                                 ID3D11RenderTargetView* target,
                                 ID3D11PixelShader* shader,
                                 ID3D11ShaderResourceView* source,
@@ -988,7 +883,7 @@ static void DrawPostProcessPass(app* application,
   }
 }
 
-static void DrawBloomEmission(app* application,
+static void draw_bloom_emission(app* application,
                               uint32_t bloom_width,
                               uint32_t bloom_height) {
   const FLOAT clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1032,7 +927,7 @@ static void DrawBloomEmission(app* application,
   }
 }
 
-static void RenderBloom(app* application) {
+static void render_bloom(app* application) {
   const uint32_t bloom_width =
       (uint32_t)(application->client_width > 1
                      ? application->client_width / 2
@@ -1041,11 +936,11 @@ static void RenderBloom(app* application) {
       (uint32_t)(application->client_height > 1
                      ? application->client_height / 2
                      : 1);
-  DrawBloomEmission(application, bloom_width, bloom_height);
-  DrawPostProcessPass(application, application->bloom_target[1],
+  draw_bloom_emission(application, bloom_width, bloom_height);
+  draw_post_process_pass(application, application->bloom_target[1],
                       application->bloom_blur_horizontal_shader,
                       application->bloom_srv[0], bloom_width, bloom_height);
-  DrawPostProcessPass(application, application->bloom_target[0],
+  draw_post_process_pass(application, application->bloom_target[0],
                       application->bloom_blur_vertical_shader,
                       application->bloom_srv[1], bloom_width, bloom_height);
 
@@ -1073,16 +968,16 @@ static void RenderBloom(app* application) {
   }
 }
 
-static bool Render(app* application) {
+static bool render(app* application) {
   if (application->viewport.width <= 0 || application->viewport.height <= 0) {
     Sleep(10);
     return true;
   }
-  if (!UpdateConstants(application))
+  if (!update_constants(application))
     return false;
   sim_brush_command command;
   while (sim_brush_queue_pop(&application->brush_queue, &command)) {
-    if (!ApplyBrush(application, command))
+    if (!apply_brush(application, command))
       return false;
   }
   LARGE_INTEGER simulation_now;
@@ -1097,7 +992,7 @@ static bool Render(app* application) {
       &application->simulation_accumulator, elapsed_ticks,
       (uint64_t)application->fps_frequency.QuadPart);
   for (uint32_t step = 0; step < simulation_steps; ++step) {
-    if (!RunSimulationUpdate(application))
+    if (!run_simulation_update(application))
       return false;
   }
   FLOAT clear[] = {0.02f, 0.03f, 0.04f, 1.0f};
@@ -1127,24 +1022,24 @@ static bool Render(app* application) {
     ID3D11ShaderResourceView* null_state = NULL;
     ID3D11DeviceContext_PSSetShaderResources(application->context, 0, 1, &null_state);
   }
-  RenderBloom(application);
-  if (!RenderTooltip(application))
+  render_bloom(application);
+  if (!render_tooltip(application))
     return false;
-  if (!Check(IDXGISwapChain_Present(application->swap_chain, 1, 0), "Present"))
+  if (!check(IDXGISwapChain_Present(application->swap_chain, 1, 0), "Present"))
     return false;
-  UpdateFps(application);
+  update_fps(application);
   return true;
 }
 
-static void UpdateWindowTitle(app* application) {
+static void update_window_title(app* application) {
   char title[128];
   snprintf(title, sizeof(title),
            "PixelSim | %s | FPS: %u | Palette keys: 0-9, A-D",
-           MaterialUiName(application->selected), application->fps);
+           sim_palette_name(application->selected), application->fps);
   SetWindowTextA(application->window, title);
 }
 
-static void UpdateFps(app* application) {
+static void update_fps(app* application) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   ++application->fps_frames;
@@ -1154,20 +1049,20 @@ static void UpdateFps(app* application) {
                                 (now.QuadPart - application->fps_start.QuadPart));
   application->fps_frames = 0;
   application->fps_start = now;
-  UpdateWindowTitle(application);
+  update_window_title(application);
 }
 
-static bool SelectMaterialAtPoint(app* application, int x, int y) {
+static bool select_material_at_point(app* application, int x, int y) {
   sim_pixel_type material =
       sim_palette_material_at(application->viewport, x, y);
   if (material >= SIM_PIXEL_TYPE_COUNT)
     return false;
   application->selected = material;
-  UpdateWindowTitle(application);
+  update_window_title(application);
   return true;
 }
 
-static bool QueueBrushAtPoint(app* application, int x, int y) {
+static bool queue_brush_at_point(app* application, int x, int y) {
   if (sim_palette_material_at(application->viewport, x, y) !=
       SIM_PIXEL_TYPE_COUNT)
     return false;
@@ -1181,7 +1076,7 @@ static bool QueueBrushAtPoint(app* application, int x, int y) {
   return sim_brush_queue_push(&application->brush_queue, command);
 }
 
-static bool ResizeSwapChain(app* application, int width, int height) {
+static bool resize_swap_chain(app* application, int width, int height) {
   application->client_width = width;
   application->client_height = height;
   application->viewport = sim_make_viewport(width, height);
@@ -1189,29 +1084,29 @@ static bool ResizeSwapChain(app* application, int width, int height) {
     return true;
 
   ID3D11DeviceContext_OMSetRenderTargets(application->context, 0, NULL, NULL);
-  ReleasePostProcessTargets(application);
-  Release(application->backbuffer);
+  release_post_process_targets(application);
+  release(application->backbuffer);
   application->backbuffer = NULL;
-  if (!Check(IDXGISwapChain_ResizeBuffers(application->swap_chain, 0,
+  if (!check(IDXGISwapChain_ResizeBuffers(application->swap_chain, 0,
                                           (UINT)width, (UINT)height,
                                           DXGI_FORMAT_UNKNOWN, 0),
              "ResizeBuffers"))
     return false;
 
   ID3D11Texture2D* backbuffer = NULL;
-  if (!Check(IDXGISwapChain_GetBuffer(application->swap_chain, 0,
+  if (!check(IDXGISwapChain_GetBuffer(application->swap_chain, 0,
                                       &IID_ID3D11Texture2D,
                                       (void**)&backbuffer),
              "GetBuffer") ||
-      !Check(ID3D11Device_CreateRenderTargetView(
+      !check(ID3D11Device_CreateRenderTargetView(
                  application->device, (ID3D11Resource*)backbuffer, NULL,
                  &application->backbuffer),
              "CreateRenderTargetView")) {
-    Release(backbuffer);
+    release(backbuffer);
     return false;
   }
-  Release(backbuffer);
-  if (!CreatePostProcessTargets(application, width, height))
+  release(backbuffer);
+  if (!create_post_process_targets(application, width, height))
     return false;
 
   D3D11_VIEWPORT viewport = {0};
@@ -1225,7 +1120,7 @@ static bool ResizeSwapChain(app* application, int width, int height) {
   return true;
 }
 
-static uint32_t CountOccupiedPixels(app* application) {
+static uint32_t count_occupied_pixels(app* application) {
   D3D11_TEXTURE2D_DESC description;
   ID3D11Texture2D_GetDesc(application->state[application->read_state],
                           &description);
@@ -1235,7 +1130,7 @@ static uint32_t CountOccupiedPixels(app* application) {
   description.MiscFlags = 0;
 
   ID3D11Texture2D* staging = NULL;
-  if (!Check(ID3D11Device_CreateTexture2D(application->device, &description,
+  if (!check(ID3D11Device_CreateTexture2D(application->device, &description,
                                           NULL, &staging),
              "CreateTexture2D verification"))
     return UINT32_MAX;
@@ -1244,11 +1139,11 @@ static uint32_t CountOccupiedPixels(app* application) {
       (ID3D11Resource*)application->state[application->read_state]);
 
   D3D11_MAPPED_SUBRESOURCE mapped;
-  if (!Check(ID3D11DeviceContext_Map(application->context,
+  if (!check(ID3D11DeviceContext_Map(application->context,
                                      (ID3D11Resource*)staging, 0,
                                      D3D11_MAP_READ, 0, &mapped),
              "Map verification")) {
-    Release(staging);
+    release(staging);
     return UINT32_MAX;
   }
   uint32_t count = 0;
@@ -1262,251 +1157,23 @@ static uint32_t CountOccupiedPixels(app* application) {
   }
   ID3D11DeviceContext_Unmap(application->context,
                             (ID3D11Resource*)staging, 0);
-  Release(staging);
+  release(staging);
   return count;
 }
 
-static uint32_t ReadStateValue(app* application, uint32_t x, uint32_t y) {
-  D3D11_TEXTURE2D_DESC description;
-  ID3D11Texture2D_GetDesc(application->state[application->read_state],
-                          &description);
-  description.Usage = D3D11_USAGE_STAGING;
-  description.BindFlags = 0;
-  description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  description.MiscFlags = 0;
-
-  ID3D11Texture2D* staging = NULL;
-  if (!Check(ID3D11Device_CreateTexture2D(application->device, &description,
-                                          NULL, &staging),
-             "CreateTexture2D pixel verification"))
-    return UINT32_MAX;
-  ID3D11DeviceContext_CopyResource(
-      application->context, (ID3D11Resource*)staging,
-      (ID3D11Resource*)application->state[application->read_state]);
-
-  D3D11_MAPPED_SUBRESOURCE mapped;
-  if (!Check(ID3D11DeviceContext_Map(application->context,
-                                     (ID3D11Resource*)staging, 0,
-                                     D3D11_MAP_READ, 0, &mapped),
-             "Map pixel verification")) {
-    Release(staging);
-    return UINT32_MAX;
-  }
-  const uint32_t* row =
-      (const uint32_t*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
-  const uint32_t pixel = row[x];
-  ID3D11DeviceContext_Unmap(application->context,
-                            (ID3D11Resource*)staging, 0);
-  Release(staging);
-  return pixel;
-}
-
-static uint32_t ReadStatePixel(app* application, uint32_t x, uint32_t y) {
-  return ReadStateValue(application, x, y) & SIM_PIXEL_TYPE_MASK;
-}
-
-static bool FindSinglePixelInRow(app* application,
-                                 uint32_t type,
-                                 uint32_t y,
-                                 uint32_t first_x,
-                                 uint32_t last_x,
-                                 uint32_t* found_x) {
-  D3D11_TEXTURE2D_DESC description;
-  ID3D11Texture2D_GetDesc(application->state[application->read_state],
-                          &description);
-  description.Usage = D3D11_USAGE_STAGING;
-  description.BindFlags = 0;
-  description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  description.MiscFlags = 0;
-
-  ID3D11Texture2D* staging = NULL;
-  if (!Check(ID3D11Device_CreateTexture2D(application->device, &description,
-                                          NULL, &staging),
-             "CreateTexture2D row verification"))
-    return false;
-  ID3D11DeviceContext_CopyResource(
-      application->context, (ID3D11Resource*)staging,
-      (ID3D11Resource*)application->state[application->read_state]);
-
-  D3D11_MAPPED_SUBRESOURCE mapped;
-  if (!Check(ID3D11DeviceContext_Map(application->context,
-                                     (ID3D11Resource*)staging, 0,
-                                     D3D11_MAP_READ, 0, &mapped),
-             "Map row verification")) {
-    Release(staging);
-    return false;
-  }
-  const uint32_t* row =
-      (const uint32_t*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
-  uint32_t matches = 0;
-  for (uint32_t x = first_x; x <= last_x; ++x) {
-    if ((row[x] & SIM_PIXEL_TYPE_MASK) == type) {
-      *found_x = x;
-      ++matches;
-    }
-  }
-  ID3D11DeviceContext_Unmap(application->context,
-                            (ID3D11Resource*)staging, 0);
-  Release(staging);
-  return matches == 1;
-}
-
-static bool MeasureMaterial(app* application,
-                            uint32_t type,
-                            uint32_t* count,
-                            uint32_t* min_x,
-                            uint32_t* max_x,
-                            uint32_t* min_y,
-                            uint32_t* max_y,
-                            uint64_t* material_checksum) {
-  D3D11_TEXTURE2D_DESC description;
-  ID3D11Texture2D_GetDesc(application->state[application->read_state],
-                          &description);
-  description.Usage = D3D11_USAGE_STAGING;
-  description.BindFlags = 0;
-  description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  description.MiscFlags = 0;
-
-  ID3D11Texture2D* staging = NULL;
-  if (!Check(ID3D11Device_CreateTexture2D(application->device, &description,
-                                          NULL, &staging),
-             "CreateTexture2D material measurement"))
-    return false;
-  ID3D11DeviceContext_CopyResource(
-      application->context, (ID3D11Resource*)staging,
-      (ID3D11Resource*)application->state[application->read_state]);
-
-  D3D11_MAPPED_SUBRESOURCE mapped;
-  if (!Check(ID3D11DeviceContext_Map(application->context,
-                                     (ID3D11Resource*)staging, 0,
-                                     D3D11_MAP_READ, 0, &mapped),
-             "Map material measurement")) {
-    Release(staging);
-    return false;
-  }
-
-  *count = 0;
-  *min_x = SIM_WIDTH;
-  *max_x = 0;
-  *min_y = SIM_HEIGHT;
-  *max_y = 0;
-  *material_checksum = UINT64_C(1469598103934665603);
-  for (uint32_t y = 0; y < SIM_HEIGHT; ++y) {
-    const uint32_t* row =
-        (const uint32_t*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
-    for (uint32_t x = 0; x < SIM_WIDTH; ++x) {
-      const uint32_t pixel_type = row[x] & SIM_PIXEL_TYPE_MASK;
-      *material_checksum ^= pixel_type;
-      *material_checksum *= UINT64_C(1099511628211);
-      if (pixel_type != type)
-        continue;
-      ++*count;
-      *min_x = x < *min_x ? x : *min_x;
-      *max_x = x > *max_x ? x : *max_x;
-      *min_y = y < *min_y ? y : *min_y;
-      *max_y = y > *max_y ? y : *max_y;
-    }
-  }
-
-  ID3D11DeviceContext_Unmap(application->context,
-                            (ID3D11Resource*)staging, 0);
-  Release(staging);
-  return true;
-}
-
-static bool MeasureBasinSurface(app* application,
-                                uint32_t type,
-                                uint32_t first_x,
-                                uint32_t last_x,
-                                uint32_t floor_y,
-                                uint32_t* shallowest_depth,
-                                uint32_t* deepest_depth,
-                                uint32_t* holes) {
-  D3D11_TEXTURE2D_DESC description;
-  ID3D11Texture2D_GetDesc(application->state[application->read_state],
-                          &description);
-  description.Usage = D3D11_USAGE_STAGING;
-  description.BindFlags = 0;
-  description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  description.MiscFlags = 0;
-
-  ID3D11Texture2D* staging = NULL;
-  if (!Check(ID3D11Device_CreateTexture2D(application->device, &description,
-                                          NULL, &staging),
-             "CreateTexture2D basin measurement"))
-    return false;
-  ID3D11DeviceContext_CopyResource(
-      application->context, (ID3D11Resource*)staging,
-      (ID3D11Resource*)application->state[application->read_state]);
-
-  D3D11_MAPPED_SUBRESOURCE mapped;
-  if (!Check(ID3D11DeviceContext_Map(application->context,
-                                     (ID3D11Resource*)staging, 0,
-                                     D3D11_MAP_READ, 0, &mapped),
-             "Map basin measurement")) {
-    Release(staging);
-    return false;
-  }
-
-  *shallowest_depth = floor_y;
-  *deepest_depth = 0;
-  *holes = 0;
-  for (uint32_t x = first_x; x <= last_x; ++x) {
-    uint32_t depth = 0;
-    bool found_empty_below_liquid = false;
-    for (uint32_t y = floor_y; y-- > 0;) {
-      const uint32_t* row = (const uint32_t*)((const uint8_t*)mapped.pData +
-                                              y * mapped.RowPitch);
-      if ((row[x] & SIM_PIXEL_TYPE_MASK) == type) {
-        ++depth;
-        if (found_empty_below_liquid)
-          ++*holes;
-      } else if (depth != 0) {
-        found_empty_below_liquid = true;
-      } else {
-        break;
-      }
-    }
-    *shallowest_depth = depth < *shallowest_depth ? depth : *shallowest_depth;
-    *deepest_depth = depth > *deepest_depth ? depth : *deepest_depth;
-  }
-
-  ID3D11DeviceContext_Unmap(application->context,
-                            (ID3D11Resource*)staging, 0);
-  Release(staging);
-  return true;
-}
-
-static void ClearSimulation(app* application) {
-  const UINT empty[4] = {0, 0, 0, 0};
-  ID3D11DeviceContext_ClearUnorderedAccessViewUint(
-      application->context, application->state_uav[0], empty);
-  ID3D11DeviceContext_ClearUnorderedAccessViewUint(
-      application->context, application->state_uav[1], empty);
-  application->read_state = 0;
-  application->frame_index = 0;
-}
-
-static bool ApplyTestPixel(app* application,
-                           sim_pixel_type type,
-                           int x,
-                           int y,
-                           uint32_t seed) {
-  return ApplyBrush(
-      application,
-      (sim_brush_command){(uint32_t)type, x, y, 0, seed});
-}
-
-static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+static LRESULT CALLBACK window_procedure(HWND window,
+                                        UINT message,
+                                        WPARAM wparam,
+                                        LPARAM lparam) {
   app* application = (app*)GetWindowLongPtr(window, GWLP_USERDATA);
   switch (message) {
     case WM_LBUTTONDOWN:
       if (!application)
         return 0;
-      if (SelectMaterialAtPoint(application, (int)(short)LOWORD(lparam),
+      if (select_material_at_point(application, (int)(short)LOWORD(lparam),
                                 (int)(short)HIWORD(lparam)))
         return 0;
-      if (QueueBrushAtPoint(application, (int)(short)LOWORD(lparam),
+      if (queue_brush_at_point(application, (int)(short)LOWORD(lparam),
                             (int)(short)HIWORD(lparam))) {
         application->painting = true;
         SetCapture(window);
@@ -1526,7 +1193,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam
           application->tracking_mouse = true;
         }
         if (application->painting && (wparam & MK_LBUTTON))
-          QueueBrushAtPoint(application, application->mouse_x,
+          queue_brush_at_point(application, application->mouse_x,
                             application->mouse_y);
       }
       return 0;
@@ -1548,18 +1215,18 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam
     case WM_KEYDOWN:
       if (application && wparam == '0') {
         application->selected = SIM_PIXEL_EMPTY;
-        UpdateWindowTitle(application);
+        update_window_title(application);
       } else if (application && wparam >= '1' && wparam <= '9') {
         application->selected = (sim_pixel_type)(wparam - '0');
-        UpdateWindowTitle(application);
+        update_window_title(application);
       } else if (application && wparam >= 'A' && wparam <= 'D') {
         application->selected = (sim_pixel_type)(SIM_PIXEL_FIRE + wparam - 'A');
-        UpdateWindowTitle(application);
+        update_window_title(application);
       }
       return 0;
     case WM_SIZE:
       if (application && application->swap_chain &&
-          !ResizeSwapChain(application, LOWORD(lparam), HIWORD(lparam)))
+          !resize_swap_chain(application, LOWORD(lparam), HIWORD(lparam)))
         PostQuitMessage(1);
       return 0;
     case WM_DESTROY:
@@ -1583,7 +1250,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
   WNDCLASSA window_class = {0};
   window_class.hInstance = instance;
   window_class.lpszClassName = "PixelSimWindow";
-  window_class.lpfnWndProc = WindowProcedure;
+  window_class.lpfnWndProc = window_procedure;
   window_class.hCursor = LoadCursor(NULL, IDC_CROSS);
   RegisterClassA(&window_class);
   application.window = CreateWindowExA(0, window_class.lpszClassName, "PixelSim", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, instance, NULL);
@@ -1597,843 +1264,57 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
   swap.OutputWindow = application.window;
   swap.SampleDesc.Count = 1;
   swap.Windowed = TRUE;
-  if (!Check(D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &swap, &application.swap_chain, &application.device, NULL, &application.context), "D3D11CreateDeviceAndSwapChain"))
+  if (!check(D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &swap, &application.swap_chain, &application.device, NULL, &application.context), "D3D11CreateDeviceAndSwapChain"))
     goto done;
   RECT client;
   GetClientRect(application.window, &client);
-  if (!ResizeSwapChain(&application, client.right, client.bottom))
+  if (!resize_swap_chain(&application, client.right, client.bottom))
     goto done;
-  if (!CreateGpuResources(&application))
+  if (!create_gpu_resources(&application))
     goto done;
-  if (!CreateTextResources(&application))
+  if (!create_text_resources(&application))
     goto done;
-  UpdateWindowTitle(&application);
+  update_window_title(&application);
   exit_code = 0;
   if (smoke) {
-    uint32_t brush_cells = sim_brush_cell_count(5);
-    if (!UpdateConstants(&application) ||
-        !ApplyBrush(&application,
+    const uint32_t brush_cells = sim_brush_cell_count(5);
+    if (!apply_brush(&application,
                     sim_make_brush_command(SIM_PIXEL_SAND, SIM_WIDTH / 2,
-                                           SIM_HEIGHT / 3, 5, 1u))) {
-      exit_code = 6;
-      goto done;
-    }
-    if (CountOccupiedPixels(&application) != brush_cells) {
-      exit_code = 3;
-      goto done;
-    }
-    if (!ApplyBrush(&application,
+                                           SIM_HEIGHT / 3, 5, 1u)) ||
+        count_occupied_pixels(&application) != brush_cells ||
+        !apply_brush(&application,
                     sim_make_brush_command(SIM_PIXEL_EMPTY, SIM_WIDTH / 2,
                                            SIM_HEIGHT / 3, 5, 2u)) ||
-        CountOccupiedPixels(&application) != 0u ||
-        !ApplyBrush(&application,
+        count_occupied_pixels(&application) != 0u ||
+        !apply_brush(&application,
                     sim_make_brush_command(SIM_PIXEL_SAND, SIM_WIDTH / 2,
                                            SIM_HEIGHT / 3, 5, 3u)) ||
-        CountOccupiedPixels(&application) != brush_cells) {
-      fprintf(stderr, "erase brush verification failed\n");
-      exit_code = 35;
-      goto done;
-    }
-    if (!ApplyBrush(&application,
-                    sim_make_brush_command(SIM_PIXEL_SAND,
+        !apply_brush(&application,
+                    sim_make_brush_command(SIM_PIXEL_WATER,
                                            SIM_WIDTH / 2 + 100,
                                            SIM_HEIGHT / 3, 5, 4u))) {
-      exit_code = 6;
+      fprintf(stderr, "GPU brush smoke check failed\n");
+      exit_code = 2;
       goto done;
     }
-    if (CountOccupiedPixels(&application) != brush_cells * 2u) {
+    for (uint32_t update = 0; update < SIM_UPDATES_PER_SECOND; ++update) {
+      if (!run_simulation_update(&application)) {
+        exit_code = 3;
+        goto done;
+      }
+    }
+    if (count_occupied_pixels(&application) != brush_cells * 2u) {
+      fprintf(stderr, "GPU simulation conservation smoke check failed\n");
       exit_code = 4;
       goto done;
     }
-    for (uint32_t frame = 0; frame < 120; ++frame) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-      const uint32_t frame_count = CountOccupiedPixels(&application);
-      if (frame_count != brush_cells * 2u) {
-        fprintf(stderr,
-                "sand conservation first failed at update %u: expected %u, got %u\n",
-                frame + 1u, brush_cells * 2u, frame_count);
-        exit_code = 5;
-        goto done;
-      }
-    }
-    const uint32_t conserved_sand_count = CountOccupiedPixels(&application);
-    if (conserved_sand_count != brush_cells * 2u) {
-      fprintf(stderr, "sand conservation failed: expected %u, got %u\n",
-              brush_cells * 2u, conserved_sand_count);
+    if (!render(&application)) {
       exit_code = 5;
-      goto done;
-    }
-
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 199, 200, 3u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SAND, 199, 199, 4u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 199, 201, 5u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 199, 199) != SIM_PIXEL_SAND ||
-        ReadStatePixel(&application, 199, 200) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 199, 201) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 200, 199) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 200, 200) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 199, 199) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 199, 200) != SIM_PIXEL_SAND ||
-        ReadStatePixel(&application, 199, 201) != SIM_PIXEL_IRON ||
-        CountOccupiedPixels(&application) != 3u) {
-      exit_code = 7;
-      goto done;
-    }
-
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 99, 7u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 99) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 100) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 99) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 100, 100) != SIM_PIXEL_WATER) {
-      exit_code = 9;
-      goto done;
-    }
-
-    // Vertical velocity accelerates over consecutive updates.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 300, 49, 10u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 300, 49) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 300, 50) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    for (uint32_t phase = 0; phase < 4; ++phase) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 300, 49) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 300, 59) != SIM_PIXEL_WATER ||
-        CountOccupiedPixels(&application) != 1u) {
-      exit_code = 17;
-      goto done;
-    }
-
-    // Free-falling powder uses the same vertical acceleration as liquid so
-    // the two material families remain visually synchronized.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SAND, 320, 49, 42u)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 4; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 320, 49) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 320, 59) != SIM_PIXEL_SAND ||
-        CountOccupiedPixels(&application) != 1u) {
-      exit_code = 25;
-      goto done;
-    }
-
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SAND, 200, 100, 11u)) {
-      exit_code = 6;
-      goto done;
-    }
-    application.frame_index = 1;
-    const uint32_t occupied_before_gravity = CountOccupiedPixels(&application);
-    if (ReadStatePixel(&application, 200, 100) != SIM_PIXEL_SAND ||
-        ReadStatePixel(&application, 200, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 199, 101) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 200, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 200, 101) != SIM_PIXEL_SAND ||
-        CountOccupiedPixels(&application) != occupied_before_gravity) {
-      exit_code = 11;
-      goto done;
-    }
-
-    // A liquid column must keep falling before any cell spreads sideways.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 100, 12u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 101, 13u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 101) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 102) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 101, 100) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 100, 101) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 102) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 99, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 101, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 101, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 102) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 101, 102) != SIM_PIXEL_EMPTY ||
-        CountOccupiedPixels(&application) != 2u) {
-      exit_code = 12;
-      goto done;
-    }
-
-    // A deeper airborne column is still falling as one body. Liquid stacked
-    // above other moving liquid must not be mistaken for grounded pressure.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 140, 100, 38u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 140, 101, 39u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 140, 102, 40u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 140, 103, 41u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 140, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 140, 101) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 140, 102) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 140, 103) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 140, 104) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 132, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 148, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 132, 102) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 148, 102) != SIM_PIXEL_EMPTY ||
-        CountOccupiedPixels(&application) != 4u) {
-      exit_code = 24;
-      goto done;
-    }
-
-    // A deep liquid column must create lateral pressure instead of remaining
-    // a rigid stack above its bottom layer.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (int x = 90; x <= 94; ++x) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, x, 101,
-                          (uint32_t)x)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (!ApplyTestPixel(&application, SIM_PIXEL_WATER, 92, 98, 27u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 92, 99, 28u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 92, 100, 29u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 92, 98) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 91, 98) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 92, 99) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 92, 100) != SIM_PIXEL_WATER ||
-        CountOccupiedPixels(&application) != 8u) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    uint32_t pressure_x = 0;
-    const bool found_pressure_pixel = FindSinglePixelInRow(
-        &application, SIM_PIXEL_WATER, 98, 84, 100, &pressure_x);
-    const uint32_t pressure_count = CountOccupiedPixels(&application);
-    if (!found_pressure_pixel || pressure_x == 92 || pressure_count != 8u) {
-      fprintf(stderr,
-              "deep pressure failed: found=%u x=%u occupied=%u\n",
-              found_pressure_pixel ? 1u : 0u, pressure_x, pressure_count);
-      exit_code = 19;
-      goto done;
-    }
-
-    // Both diagonal directions must become reachable during one phase cycle.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SAND, 100, 100, 14u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 100, 101, 15u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 101, 101, 16u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SAND, 201, 100, 17u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 201, 101, 18u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 200, 101, 19u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_SAND ||
-        ReadStatePixel(&application, 100, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 101, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 99, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 201, 100) != SIM_PIXEL_SAND ||
-        ReadStatePixel(&application, 201, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 200, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 202, 101) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    for (uint32_t phase = 0; phase < 2; ++phase) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 102) != SIM_PIXEL_SAND) {
-      exit_code = 13;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 201, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 202, 101) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 202, 102) != SIM_PIXEL_SAND) {
-      exit_code = 14;
-      goto done;
-    }
-
-    // A single supported liquid cell has no hydrostatic pressure and must
-    // remain settled instead of moving sideways forever.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (int x = 80; x <= 120; ++x) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, x, 101,
-                          (uint32_t)x)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, 79, 100, 20u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 121, 100, 21u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 100, 22u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 99, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 101, 100) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 80, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 100, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 120, 101) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 79, 100) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 121, 100) != SIM_PIXEL_IRON) {
-      exit_code = 18;
-      goto done;
-    }
-    for (uint32_t phase = 0; phase < 32; ++phase) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-      uint32_t water_x = 0;
-      if (!FindSinglePixelInRow(&application, SIM_PIXEL_WATER, 100, 80, 120,
-                                &water_x) ||
-          water_x != 100u) {
-        exit_code = 15;
-        goto done;
-      }
-    }
-    if (CountOccupiedPixels(&application) != 44u) {
-      exit_code = 15;
-      goto done;
-    }
-
-    // Identical reaction neighborhoods at different hashes must not always
-    // favor the first edge.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 39, 39, 21u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_LAVA, 40, 39, 22u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_LAVA, 39, 40, 23u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 41, 39, 24u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_LAVA, 42, 39, 25u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_LAVA, 41, 40, 26u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 39, 39) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 40, 39) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 39, 40) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 40, 40) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 41, 39) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 42, 39) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 41, 40) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 42, 40) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!UpdateConstants(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    Dispatch(&application, application.simulate_shader);
-    ++application.frame_index;
-    if (ReadStatePixel(&application, 39, 39) != SIM_PIXEL_STEAM ||
-        ReadStatePixel(&application, 40, 39) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 39, 40) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 41, 39) != SIM_PIXEL_STEAM ||
-        ReadStatePixel(&application, 41, 40) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 42, 39) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 42, 40) != SIM_PIXEL_EMPTY ||
-        CountOccupiedPixels(&application) != 6u) {
-      exit_code = 16;
-      goto done;
-    }
-
-    // Rust propagates into adjacent iron while preserving occupied-cell
-    // count. Wood support isolates the intended iron target from the powder.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (int x = 49; x <= 52; ++x) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_WOOD, x, 51,
-                          (uint32_t)(x + 50))) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (!ApplyTestPixel(&application, SIM_PIXEL_RUST, 50, 50, 43u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 51, 50, 44u) ||
-        CountOccupiedPixels(&application) != 6u) {
-      exit_code = 18;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 256; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 50, 50) != SIM_PIXEL_RUST ||
-        ReadStatePixel(&application, 51, 50) != SIM_PIXEL_RUST ||
-        CountOccupiedPixels(&application) != 6u) {
-      exit_code = 26;
-      goto done;
-    }
-
-    // New material reactions are checked in isolated blocks before gravity can
-    // move their participants away from the intended interface.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_ACID, 49, 49, 47u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 50, 49, 48u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_FIRE, 53, 49, 49u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_OIL, 54, 49, 50u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SALT, 57, 49, 51u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 58, 49, 52u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_ACID, 61, 49, 53u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 62, 49, 54u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_ACID, 65, 49, 55u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SALT, 66, 49, 56u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_FIRE, 69, 49, 57u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 70, 49, 58u)) {
-      exit_code = 6;
-      goto done;
-    }
-    Dispatch(&application, application.simulate_shader);
-    if (ReadStatePixel(&application, 49, 49) != SIM_PIXEL_ACID ||
-        ReadStatePixel(&application, 50, 49) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 54, 49) != SIM_PIXEL_FIRE ||
-        ReadStatePixel(&application, 57, 49) != SIM_PIXEL_SALT ||
-        ReadStatePixel(&application, 58, 49) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 61, 49) != SIM_PIXEL_ACID ||
-        ReadStatePixel(&application, 62, 49) != SIM_PIXEL_BEDROCK ||
-        ReadStatePixel(&application, 65, 49) != SIM_PIXEL_ACID ||
-        ReadStatePixel(&application, 66, 49) != SIM_PIXEL_SALT ||
-        ReadStatePixel(&application, 69, 49) != SIM_PIXEL_STEAM) {
-      fprintf(stderr, "new material reaction verification failed\n");
-      exit_code = 30;
-      goto done;
-    }
-
-    // Salt remains granular on initial contact, then gradually transfers into
-    // a neighboring water cell as persistent dissolved-salt metadata.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_SALT, 81, 87, 69u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 82, 87, 70u)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (int x = 80; x <= 83; ++x) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, x, 88,
-                          (uint32_t)(x + 71))) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (!RunSimulationUpdate(&application) ||
-        ReadStatePixel(&application, 81, 87) != SIM_PIXEL_SALT ||
-        (ReadStateValue(&application, 82, 87) & SIM_DISSOLVED_SALT_MASK) != 0u) {
-      fprintf(stderr, "salt dissolved immediately on water contact\n");
-      exit_code = 33;
-      goto done;
-    }
-    for (uint32_t update = 1; update < 64u; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 81, 87) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 82, 87) != SIM_PIXEL_WATER ||
-        (ReadStateValue(&application, 82, 87) & SIM_DISSOLVED_SALT_MASK) == 0u) {
-      fprintf(stderr, "gradual salt dissolution verification failed\n");
-      exit_code = 34;
-      goto done;
-    }
-
-    // Water is denser than oil, so an oil layer rises when water falls into it.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 99, 59u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_OIL, 100, 100, 60u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 99, 100, 61u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 101, 100, 62u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 100, 101, 63u) ||
-        !RunSimulationUpdate(&application) ||
-        ReadStatePixel(&application, 100, 99) != SIM_PIXEL_OIL ||
-        ReadStatePixel(&application, 100, 100) != SIM_PIXEL_WATER) {
-      fprintf(stderr, "oil buoyancy verification failed\n");
-      exit_code = 31;
-      goto done;
-    }
-
-    // Fire has a bounded lifetime and leaves smoke when it cannot spread.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_FIRE, 100, 100, 64u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 100, 99, 65u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 99, 100, 66u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 101, 100, 67u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_BEDROCK, 100, 101, 68u)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 46u; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_SMOKE ||
-        CountOccupiedPixels(&application) != 5u) {
-      fprintf(stderr, "fire lifetime verification failed\n");
-      exit_code = 32;
-      goto done;
-    }
-
-    // Velocity accelerates liquid beyond one cell per update, but every cell
-    // on the path is checked so the particle stops immediately above a wall.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 20, 32u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 100, 25, 33u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 99, 24, 34u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_IRON, 101, 24, 35u)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 20) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 21) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 100, 24) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 100, 25) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 99, 24) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 101, 24) != SIM_PIXEL_IRON) {
-      exit_code = 18;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 3; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 100, 20) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 100, 24) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 25) != SIM_PIXEL_IRON ||
-        CountOccupiedPixels(&application) != 4u) {
-      exit_code = 21;
-      goto done;
-    }
-
-    // Accelerated lava must react with the first crossed water cell instead
-    // of tunneling through it to an empty destination farther below.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_LAVA, 180, 20, 45u)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 2; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (ReadStatePixel(&application, 180, 23) != SIM_PIXEL_LAVA ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 180, 25, 46u) ||
-        ReadStatePixel(&application, 180, 24) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 180, 26) != SIM_PIXEL_EMPTY) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 180, 25) != SIM_PIXEL_LAVA ||
-        ReadStatePixel(&application, 180, 26) != SIM_PIXEL_WATER) {
-      fprintf(stderr, "fast lava crossed a reactive water layer\n");
-      exit_code = 29;
-      goto done;
-    }
-    for (uint32_t reaction_update = 0; reaction_update < 2u;
-         ++reaction_update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    uint32_t reaction_iron = 0;
-    uint32_t reaction_steam = 0;
-    uint32_t reaction_lava = 0;
-    uint32_t reaction_water = 0;
-    uint32_t reaction_min_x = 0;
-    uint32_t reaction_max_x = 0;
-    uint32_t reaction_min_y = 0;
-    uint32_t reaction_max_y = 0;
-    uint64_t reaction_checksum = 0;
-    if (!MeasureMaterial(&application, SIM_PIXEL_IRON, &reaction_iron,
-                         &reaction_min_x, &reaction_max_x, &reaction_min_y,
-                         &reaction_max_y, &reaction_checksum) ||
-        !MeasureMaterial(&application, SIM_PIXEL_STEAM, &reaction_steam,
-                         &reaction_min_x, &reaction_max_x, &reaction_min_y,
-                         &reaction_max_y, &reaction_checksum) ||
-        !MeasureMaterial(&application, SIM_PIXEL_LAVA, &reaction_lava,
-                         &reaction_min_x, &reaction_max_x, &reaction_min_y,
-                         &reaction_max_y, &reaction_checksum) ||
-        !MeasureMaterial(&application, SIM_PIXEL_WATER, &reaction_water,
-                         &reaction_min_x, &reaction_max_x, &reaction_min_y,
-                         &reaction_max_y, &reaction_checksum)) {
-      exit_code = 6;
-      goto done;
-    }
-    const uint32_t reaction_count = CountOccupiedPixels(&application);
-    if (reaction_iron != 1u || reaction_steam != 1u || reaction_lava != 0u ||
-        reaction_water != 0u ||
-        reaction_count != 2u) {
-      fprintf(stderr,
-              "fast lava reaction failed: iron=%u steam=%u lava=%u water=%u count=%u\n",
-              reaction_iron, reaction_steam, reaction_lava, reaction_water,
-              reaction_count);
-      exit_code = 29;
-      goto done;
-    }
-
-    // Pressure transfer stops at internal walls rather than crossing them.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (int x = 80; x <= 120; ++x) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, x, 101,
-                          (uint32_t)x)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, 105, 99, 36u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 100, 37u) ||
-        !ApplyTestPixel(&application, SIM_PIXEL_WATER, 100, 99, 38u) ||
-        CountOccupiedPixels(&application) != 44u) {
-      exit_code = 18;
-      goto done;
-    }
-    if (!RunSimulationUpdate(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    if (ReadStatePixel(&application, 100, 100) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 100, 99) != SIM_PIXEL_EMPTY ||
-        ReadStatePixel(&application, 99, 99) != SIM_PIXEL_WATER ||
-        ReadStatePixel(&application, 105, 99) != SIM_PIXEL_IRON ||
-        ReadStatePixel(&application, 106, 99) != SIM_PIXEL_EMPTY ||
-        CountOccupiedPixels(&application) != 44u) {
-      exit_code = 23;
-      goto done;
-    }
-
-    // A bulk liquid deposit must settle into a broad, shallow pool rather
-    // than retaining the tall mound produced by one-cell powder-like flow.
-    ClearSimulation(&application);
-    if (!UpdateConstants(&application)) {
-      exit_code = 6;
-      goto done;
-    }
-    for (int x = 250; x <= 349; ++x) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, x, 300,
-                          (uint32_t)x)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    for (int y = 270; y < 300; ++y) {
-      if (!ApplyTestPixel(&application, SIM_PIXEL_IRON, 250, y,
-                          (uint32_t)y) ||
-          !ApplyTestPixel(&application, SIM_PIXEL_IRON, 349, y,
-                          (uint32_t)(y + 31))) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    for (int y = 250; y < 266; ++y) {
-      for (int x = 291; x < 307; ++x) {
-        if (!ApplyTestPixel(&application, SIM_PIXEL_WATER, x, y,
-                            (uint32_t)(x * 397 + y))) {
-          exit_code = 6;
-          goto done;
-        }
-      }
-    }
-    if (CountOccupiedPixels(&application) != 416u) {
-      exit_code = 18;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 256; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    uint32_t water_count = 0;
-    uint32_t water_min_x = 0;
-    uint32_t water_max_x = 0;
-    uint32_t water_min_y = 0;
-    uint32_t water_max_y = 0;
-    uint64_t settled_checksum = 0;
-    if (!MeasureMaterial(&application, SIM_PIXEL_WATER, &water_count,
-                         &water_min_x, &water_max_x, &water_min_y,
-                         &water_max_y, &settled_checksum)) {
-      exit_code = 220;
-      goto done;
-    }
-    if (water_count != 256u) {
-      exit_code = 221;
-      goto done;
-    }
-    if (water_max_x - water_min_x + 1u < 80u) {
-      fprintf(stderr,
-              "basin width failed: min_x=%u max_x=%u width=%u water=%u\n",
-              water_min_x, water_max_x, water_max_x - water_min_x + 1u,
-              water_count);
-      exit_code = 222;
-      goto done;
-    }
-    if (water_min_y < 295u || water_max_y != 299u) {
-      exit_code = 22;
-      goto done;
-    }
-    if (CountOccupiedPixels(&application) != 416u) {
-      exit_code = 224;
-      goto done;
-    }
-    uint32_t shallowest_depth = 0;
-    uint32_t deepest_depth = 0;
-    uint32_t basin_holes = 0;
-    if (!MeasureBasinSurface(&application, SIM_PIXEL_WATER, 251, 348, 300,
-                             &shallowest_depth, &deepest_depth,
-                             &basin_holes)) {
-      exit_code = 225;
-      goto done;
-    }
-    if (deepest_depth - shallowest_depth > 1u || basin_holes != 0u) {
-      exit_code = 28;
-      goto done;
-    }
-    for (uint32_t update = 0; update < 64; ++update) {
-      if (!RunSimulationUpdate(&application)) {
-        exit_code = 6;
-        goto done;
-      }
-    }
-    uint64_t resting_checksum = 0;
-    if (!MeasureMaterial(&application, SIM_PIXEL_WATER, &water_count,
-                         &water_min_x, &water_max_x, &water_min_y,
-                         &water_max_y, &resting_checksum) ||
-        resting_checksum != settled_checksum) {
-      exit_code = 27;
-      goto done;
-    }
-    double gpu_milliseconds = 0.0;
-    if (!MeasureSimulationGpuMilliseconds(&application, 120u,
-                                          &gpu_milliseconds)) {
-      exit_code = 226;
-      goto done;
-    }
-    fprintf(stderr, "average GPU simulation update: %.3f ms\n",
-            gpu_milliseconds);
-    if (gpu_milliseconds > 1000.0 / (double)SIM_UPDATES_PER_SECOND) {
-      exit_code = 227;
-      goto done;
-    }
-    if (!Render(&application)) {
-      exit_code = 228;
       goto done;
     }
     goto done;
   }
+
   MSG message;
   while (true) {
     while (PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
@@ -2444,45 +1325,45 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
       TranslateMessage(&message);
       DispatchMessage(&message);
     }
-    if (!Render(&application)) {
+    if (!render(&application)) {
       exit_code = 6;
       goto done;
     }
   }
 done:
-  ReleasePostProcessTargets(&application);
-  Release(application.text.blend);
-  Release(application.text.sampler);
-  Release(application.text.input_layout);
-  Release(application.text.pixel_shader);
-  Release(application.text.vertex_shader);
-  Release(application.text.vertices);
-  Release(application.text.atlas_srv);
-  Release(application.text.atlas);
-  Release(application.point_sampler);
-  Release(application.linear_sampler);
-  Release(application.bloom_composite_shader);
-  Release(application.bloom_blur_vertical_shader);
-  Release(application.bloom_blur_horizontal_shader);
-  Release(application.bloom_emission_shader);
-  Release(application.pixel_shader);
-  Release(application.vertex_shader);
-  Release(application.brush_shader);
-  Release(application.liquid_horizontal_shader);
-  Release(application.falling_vertical_shader);
-  Release(application.simulate_shader);
-  Release(application.constants);
-  Release(application.brush_srv);
-  Release(application.brush_buffer);
-  Release(application.state_uav[0]);
-  Release(application.state_uav[1]);
-  Release(application.state_srv[0]);
-  Release(application.state_srv[1]);
-  Release(application.state[0]);
-  Release(application.state[1]);
-  Release(application.backbuffer);
-  Release(application.swap_chain);
-  Release(application.context);
-  Release(application.device);
+  release_post_process_targets(&application);
+  release(application.text.blend);
+  release(application.text.sampler);
+  release(application.text.input_layout);
+  release(application.text.pixel_shader);
+  release(application.text.vertex_shader);
+  release(application.text.vertices);
+  release(application.text.atlas_srv);
+  release(application.text.atlas);
+  release(application.point_sampler);
+  release(application.linear_sampler);
+  release(application.bloom_composite_shader);
+  release(application.bloom_blur_vertical_shader);
+  release(application.bloom_blur_horizontal_shader);
+  release(application.bloom_emission_shader);
+  release(application.pixel_shader);
+  release(application.vertex_shader);
+  release(application.brush_shader);
+  release(application.liquid_horizontal_shader);
+  release(application.falling_vertical_shader);
+  release(application.simulate_shader);
+  release(application.constants);
+  release(application.brush_srv);
+  release(application.brush_buffer);
+  release(application.state_uav[0]);
+  release(application.state_uav[1]);
+  release(application.state_srv[0]);
+  release(application.state_srv[1]);
+  release(application.state[0]);
+  release(application.state[1]);
+  release(application.backbuffer);
+  release(application.swap_chain);
+  release(application.context);
+  release(application.device);
   return exit_code;
 }
