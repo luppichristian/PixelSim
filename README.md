@@ -8,11 +8,33 @@ A small **Noita-style cellular-material sandbox** for Windows, implemented in C 
 
 ## Design
 
-The simulation is a 640 × 360 pair of `R32_UINT` GPU textures. Physics advances at an exact fixed 120 updates per second, independently of presentation FPS, with at most four catch-up updates after a stall. The low byte of each cell stores its material, and falling powders and liquids carry vertical velocity in a packed metadata byte.
+The simulation is a 640 × 360 pair of R32_UINT GPU textures.
 
-Each update uses five conflict-free compute dispatches. A 2 × 2 checkerboard material pass handles diagonal powder rolls, gases, displacement, and reactions, and a column-owned pass applies vertical acceleration to powders and liquids. Three in-place row-color dispatches then transfer liquid pressure; active rows are separated by three cells, so their two-row support footprints never overlap. Every active row is loaded cooperatively into group-shared memory, obstacle segments are identified in parallel, and shared atomics select at most one conservative source/destination swap per segment. All six color orders rotate across updates to balance ordering bias. Airborne liquid falls straight instead of treating other falling liquid as stable support, while a pool whose column depths differ by at most one cell is a stable discrete equilibrium. Vertical movement ray-marches every crossed cell and stops before obstacles, horizontal pressure never crosses a solid wall, and lava stops at water so accelerated motion cannot skip the reaction. The pixel shader masks the packed state and renders it into a floating-point scene target. A material-aware half-resolution emission pass includes fire, lava, and acid; a separable Gaussian blur creates the bloom texture, which is composited with the scene before the text overlay. Bright non-emissive materials and UI elements do not contribute to bloom.
+Physics advances at fixed 120 ups, with at most four catch"-up" updates after a stall.
 
-The CPU never uploads the world texture. Mouse events enqueue 20-byte `sim_brush_command` values—including erase commands whose material type is empty—and an in-place GPU `ApplyBrush` dispatch touches only the clipped brush rectangle before the usual physics passes. Holding the mouse still does not repeatedly deposit material. UI text uses a one-time `stb_truetype` atlas built from the Windows Segoe UI font and a separate alpha-blended D3D11 overlay pass.
+The CPU never uploads the world texture. Mouse events enqueue commands that need to be processed by the GPU.
+
+The low byte of each cell stores its material, and falling powders and liquids carry vertical velocity in a packed byte.
+
+Each update uses five compute dispatches.
+
+A 2 × 2 checkerboard material pass handles diagonal powder, gases, displacement, and reactions, and a column pass applies vertical acceleration to powders and liquids.
+
+Then 3 inplace row-color dispatches then transfer liquid pressure.
+
+Active rows are separated by three cells, so their two-row support footprints never overlap.
+
+Every active row is loaded into group-shared memory, obstacle segments are identified in parallel, and shared atomics select at most one conservative source/destination swap per segment.
+
+All sixcolor orders rotate across updates to balance ordering bias.
+
+Liquid in air falls straight instead of treating other falling liquid as stable support, while a pool whose column depths differ by at most one cell is a stable discrete equilibrium.
+
+Vertical movement raymarches every crossed cell and stops before obstacles, horizontal pressure never crosses a solid wall, and lava stops at water so accelerated motion cannot skip the reaction.
+
+The pixel shader masks the packed state and renders it into a floating-point scene target.
+
+For improving visuals, a simple Gaussian blur bloom pass was implemented for emissive materials.
 
 | Family | Materials | Behavior |
 | --- | --- | --- |
